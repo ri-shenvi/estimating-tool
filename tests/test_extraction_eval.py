@@ -13,8 +13,10 @@ from bidtriage.extraction.evaluate import (
     EvalCase,
     compare,
     evaluate,
+    format_corpus_report,
     format_report,
     size_band,
+    validate_corpus,
 )
 from bidtriage.extraction.postprocess import postprocess
 from bidtriage.extraction.protocol import ExtractionInput
@@ -192,12 +194,83 @@ def test_every_fixture_loads_as_an_eval_case(fixtures_dir):  # type: ignore[no-u
     assert "RYCON CONSTRUCTION" in attachment_only.item.attachments[0].text
 
 
-def test_cli_eval_reports_and_exits_zero_offline(fixtures_dir):  # type: ignore[no-untyped-def]
+def test_cli_offline_validates_the_corpus_and_claims_no_accuracy(fixtures_dir):  # type: ignore[no-untyped-def]
     result = CliRunner().invoke(app, ["eval-extraction", str(fixtures_dir), "--offline"])
     assert result.exit_code == 0, result.output
-    assert "gate 97%: PASS" in result.output
+    assert "validated against the SPEC-02 F2 invariants" in result.output
+    assert "PROBLEM" not in result.output
+    # The gates belong to the online run; printing a verdict here would be a false green.
+    assert "gate 97%" not in result.output and "PASS" not in result.output
+    assert "100%" not in result.output
 
 
 def test_cli_eval_rejects_an_empty_directory(tmp_path):  # type: ignore[no-untyped-def]
     result = CliRunner().invoke(app, ["eval-extraction", str(tmp_path), "--offline"])
     assert result.exit_code == 1 and "no fixtures" in result.output
+
+
+# ------------------------------------------------------------------ corpus validation
+
+
+def test_corpus_validation_passes_on_the_real_fixtures(fixtures_dir):  # type: ignore[no-untyped-def]
+    report = validate_corpus(load_eval_cases(fixtures_dir))
+    assert report.ok, [f"{p.name}: {p.detail}" for p in report.problems]
+    assert report.checked >= 30
+    assert report.kinds["itb"] > 0 and report.with_due_date > 0
+    assert report.with_attachment_sources >= 2
+
+
+def test_corpus_validation_catches_an_unresolvable_date():  # type: ignore[no-untyped-def]
+    case = _case("bad", _llm(bid_due=LLMDateTimeField(value="sometime in January", confidence=0.8)))
+    report = validate_corpus([case])
+    assert not report.ok
+    assert "did not resolve" in report.problems[0].detail
+
+
+def test_corpus_validation_catches_a_location_outside_the_vocabulary():  # type: ignore[no-untyped-def]
+    from bidtriage.extraction.schema import StrField
+
+    case = _case(
+        "bad",
+        _llm(
+            gc_name=StrField(
+                value="PJ Dick",
+                confidence=0.9,
+                source="PJ Dick",
+                source_location="body of the email",
+            )
+        ),
+    )
+    report = validate_corpus([case])
+    assert not report.ok and "outside the F2 vocabulary" in report.problems[0].detail
+
+
+def test_corpus_validation_catches_an_over_long_excerpt_and_summary():  # type: ignore[no-untyped-def]
+    from bidtriage.extraction.schema import StrField
+
+    case = _case(
+        "bad",
+        _llm(
+            gc_name=StrField(
+                value="PJ Dick", confidence=0.9, source="x" * 250, source_location="body"
+            ),
+            summary=" ".join(["word"] * 80),
+        ),
+    )
+    details = " ".join(p.detail for p in validate_corpus([case]).problems)
+    assert "over the 200 cap" in details and "over the 60-word cap" in details
+
+
+def test_corpus_validation_reports_a_fixture_it_cannot_post_process(monkeypatch):  # type: ignore[no-untyped-def]
+    import bidtriage.extraction.evaluate as ev
+
+    monkeypatch.setattr(
+        ev, "postprocess", lambda *a, **k: (_ for _ in ()).throw(ValueError("boom"))
+    )
+    report = validate_corpus([_case("bad", _llm())])
+    assert not report.ok and "ValueError: boom" in report.problems[0].detail
+
+
+def test_corpus_report_says_plainly_that_it_is_not_accuracy(fixtures_dir):  # type: ignore[no-untyped-def]
+    text = "\n".join(format_corpus_report(validate_corpus(load_eval_cases(fixtures_dir))))
+    assert "Accuracy is not measured here" in text

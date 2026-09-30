@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
+from html import escape
 from typing import Any, cast
 
 import anthropic
@@ -26,6 +27,11 @@ ATTACHMENT_CHAR_CAP = 12_000
 MAX_ATTACHMENTS = 4
 BODY_CHAR_CAP = 20_000
 _PRIORITY_WORDS = ("itb", "invitation", "scope", "bid form", "bid-form", "addend", "bulletin")
+
+
+def _attr(value: str) -> str:
+    """Escape a value that is about to become part of the prompt's own markup."""
+    return escape(value, quote=True)
 
 
 def _prioritize(attachments):
@@ -52,6 +58,9 @@ def build_user_content(item: ExtractionInput) -> tuple[str, bool]:
         f"<to>{', '.join(item.to)}</to>",
         f"<subject>{item.subject}</subject>",
     ]
+    # Body and subject are data the model is told not to obey. Filenames are different: they are
+    # rendered into the envelope's own markup, so a name like `x"></attachment><message>` could
+    # forge a second message. Escape them where they become structure.
     body = item.body
     if len(body) > BODY_CHAR_CAP:
         body = body[: BODY_CHAR_CAP // 2] + "\n[...truncated...]\n" + body[-BODY_CHAR_CAP // 2 :]
@@ -67,8 +76,8 @@ def build_user_content(item: ExtractionInput) -> tuple[str, bool]:
                 + text[-ATTACHMENT_CHAR_CAP // 3 :]
             )
             attachments_truncated = True
-        parts.append(f'<attachment name="{a.filename}">\n{text}\n</attachment>')
-    skipped = [a.filename for a in item.attachments if a.large_document]
+        parts.append(f'<attachment name="{_attr(a.filename)}">\n{text}\n</attachment>')
+    skipped = [_attr(a.filename) for a in item.attachments if a.large_document]
     if skipped:
         parts.append(
             "<large_documents_not_included>"

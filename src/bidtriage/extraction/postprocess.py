@@ -40,7 +40,9 @@ _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 
 # inside the window the date stays in the past and is flagged; outside it rolls forward.
 STALE_GRACE = timedelta(days=2)
 
-_LOCATION_OK = re.compile(r"^(subject|body|attachment:)", re.I)
+# `attachment:<filename>` with an optional `:p<page>` suffix. The filename may itself contain
+# colons, so the page group only matches a trailing `:p<digits>`.
+_ATTACHMENT_LOCATION = re.compile(r"^attachment:(?P<name>.*?)(?::p(?P<page>\d+))?$", re.I)
 
 
 def _zone(name: str | None) -> ZoneInfo:
@@ -131,14 +133,26 @@ def _excerpt(source: str | None) -> str | None:
     return text
 
 
-def _location_label(value: str | None) -> str | None:
-    """`subject`, `body` or `attachment:<name>[:p<page>]`; anything else is not a location."""
+def location_label(value: str | None) -> str | None:
+    """`subject`, `body` or `attachment:<name>[:p<page>]`; anything else is not a location.
+
+    The vocabulary is closed, so a prefix is not enough: "body of the email" is prose, not a
+    location, and letting it through would make `source_location` unusable for anything that wants
+    to open the document a fact came from.
+    """
     if not value:
         return None
     text = " ".join(value.split())
     if text.lower() in ("subject", "body"):
         return text.lower()
-    return text if _LOCATION_OK.match(text) else None
+    m = _ATTACHMENT_LOCATION.match(text)
+    if m is None:
+        return None
+    name = m.group("name").strip()
+    if not name:
+        return None
+    page = m.group("page")
+    return f"attachment:{name}" + (f":p{int(page)}" if page else "")
 
 
 def _time_known(field: LLMDateTimeField, dt: datetime | None, parsed_time: bool) -> bool:
@@ -158,7 +172,7 @@ def _dt_field(f: LLMDateTimeField, anchor: datetime) -> DateTimeField:
         timezone=str(dt.tzinfo) if dt is not None else None,
         confidence=f.confidence if dt else 0.0,
         source=_excerpt(f.source),
-        source_location=_location_label(f.source_location),
+        source_location=location_label(f.source_location),
     )
 
 
@@ -170,7 +184,7 @@ def _prebid(p: LLMPrebid, anchor: datetime) -> Prebid:
         mandatory=p.mandatory,
         confidence=p.confidence if dt else 0.0,
         source=_excerpt(p.source),
-        source_location=_location_label(p.source_location),
+        source_location=location_label(p.source_location),
     )
 
 
@@ -180,21 +194,21 @@ def _clean_str(f: StrField) -> StrField:
         value=value,
         confidence=f.confidence if value else 0.0,
         source=_excerpt(f.source),
-        source_location=_location_label(f.source_location),
+        source_location=location_label(f.source_location),
     )
 
 
 def _geo_location(loc: Location) -> GeoLocation:
     out = GeoLocation.model_validate(loc.model_dump())
     out.source = _excerpt(loc.source)
-    out.source_location = _location_label(loc.source_location)
+    out.source_location = location_label(loc.source_location)
     return out
 
 
 def _size(size: SizeSignals) -> SizeSignals:
     out = size.model_copy()
     out.source = _excerpt(size.source)
-    out.source_location = _location_label(size.source_location)
+    out.source_location = location_label(size.source_location)
     return out
 
 

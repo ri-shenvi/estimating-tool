@@ -433,6 +433,8 @@ def extract_message(
     item = build_extraction_input(session, msg, external_ref=external_ref)
     if not force and obviously_not_bid(item):
         msg.kind, msg.kind_confidence, msg.extraction_status = Kind.not_bid.value, 0.99, "skipped"
+        # A message swept here after earlier failures must not keep showing the stale reason.
+        msg.extraction_error = None
         session.flush()
         return None
     try:

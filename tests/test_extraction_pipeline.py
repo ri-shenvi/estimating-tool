@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from bidtriage.core.clock import BUSINESS_TZ, FrozenClock
-from bidtriage.core.jobs import JobFailedError, claim, enqueue
+from bidtriage.core.jobs import JobFailedError, claim
 from bidtriage.core.models import Extraction, GeocodeCache, Job, Source
 from bidtriage.extraction.fake import FakeExtractor
 from bidtriage.extraction.geocode import CachedGeocoder, GeoResult, apply_geocode, geocode_queries
@@ -212,11 +212,13 @@ def test_three_failures_mark_the_message_and_keep_it_visible(session, fixtures_d
     msg = _ingest(session, fixtures_dir, clock, "refusal_stub.eml")
     extractor = FailingExtractor(ConnectionError("anthropic unreachable"))
     ctx = handlers.Context(extractor, geocoder=StubGeocoder())
-    enqueue(session, "extract_message", f"extract:{msg.id}", {"message_id": msg.id}, clock=clock)
+    # Ingestion already queued the extraction; retry that job rather than adding a second one, or
+    # the loop would alternate between two jobs and neither would reach its third attempt.
+    job = session.scalar(select(Job).where(Job.kind == "extract_message"))
+    assert job is not None and job.max_attempts == 3
 
     statuses = []
     for _ in range(3):
-        job = session.scalar(select(Job))
         job.run_at = datetime.now(tz=UTC) - timedelta(seconds=1)  # skip the backoff wait
         session.flush()
         assert _run_once(monkeypatch, session, ctx)
@@ -226,7 +228,7 @@ def test_three_failures_mark_the_message_and_keep_it_visible(session, fixtures_d
     assert extractor.calls == 3
     assert msg.extraction_attempts == 3
     assert "ConnectionError" in msg.extraction_error
-    assert session.scalar(select(Job)).status == "failed"
+    assert job.status == "failed" and job.attempts == 3
 
     from bidtriage.worker.digest_job import review_items
 
@@ -433,3 +435,38 @@ def test_attempts_accumulate_across_retry_rounds(session, fixtures_dir):  # type
     assert msg.extraction_attempts == 6 and msg.extraction_status == "failed"
     assert pipeline.enqueue_extraction_retries(session, clock=clock, max_rounds=6) == 0
     assert pipeline.enqueue_extraction_retries(session, clock=clock, max_rounds=9) == 1
+
+
+def test_vague_location_fixture_geocodes_to_a_city_centroid(session, fixtures_dir):  # type: ignore[no-untyped-def]
+    """ "downtown Pittsburgh" keeps its raw phrase and lands on the city, not on a street."""
+    clock = FrozenClock(NOW)
+    seed_gcs(session)
+    msg = _ingest(session, fixtures_dir, clock, "vague_location.eml")
+    stub = StubGeocoder(GeoResult(40.4406, -79.9959))
+    ext = pipeline.extract_message(
+        session,
+        msg,
+        FakeExtractor(fixtures_dir),
+        external_ref="vague_location",
+        clock=clock,
+        geocoder=CachedGeocoder(session, stub),
+    )
+    assert ext is not None
+    location = ext.payload["location"]
+    assert location["raw"] == "downtown Pittsburgh"
+    assert location["geo_precision"] == "city"
+    # No street was stated, so no street-level query was ever attempted.
+    assert stub.queries == ["Pittsburgh, PA"]
+    opp, _ = pipeline.resolve_message(session, msg, ext, clock=clock)
+    assert (round(opp.lat, 3), round(opp.lon, 3)) == (40.441, -79.996)
+
+
+def test_prefilter_skip_clears_a_stale_failure_reason(session, fixtures_dir):  # type: ignore[no-untyped-def]
+    clock = FrozenClock(NOW)
+    msg = _ingest(session, fixtures_dir, clock, "vendor_newsletter.eml")
+    msg.extraction_status, msg.extraction_attempts = "failed", 3
+    msg.extraction_error = "error: ConnectionError: anthropic unreachable"
+    session.flush()
+    assert pipeline.extract_message(session, msg, FakeExtractor(fixtures_dir), clock=clock) is None
+    assert msg.extraction_status == "skipped" and msg.extraction_error is None
+    assert msg not in pipeline.messages_needing_review(session)

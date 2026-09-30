@@ -1,13 +1,22 @@
 """Extraction eval harness (SPEC-02 "Technical Notes").
 
 Every fixture in `tests/fixtures/messages` is an `.eml` plus the `.expected.json` an estimator
-would have written. This runs the extractor over each one and reports per-field accuracy against
-the goals in SPEC-02: due date 97%, GC name 98%, project type 90%, size band 80%, and the
-ITB / not-ITB classification boundary 97%. CI fails when a gate slips.
+would have written. Two different jobs run over that corpus, and keeping them apart matters:
 
-Expectations are themselves post-processed before comparison, so the fixture files stay in the
-model's own vocabulary (`10-16`, `weekday:friday@12:00`) and the date rules under test are the same
-ones production applies.
+`evaluate()` measures **accuracy** — it calls a real extractor and compares field by field against
+the expectations, with the SPEC-02 goals as gates: due date 97%, GC name 98%, project type 90%,
+size band 80%, and the ITB / not-ITB boundary 97%. It only means anything against the model.
+
+`validate_corpus()` measures **the corpus itself** — every fixture is schema-valid, post-processes
+without error, and obeys the invariants SPEC-02 F2 states (summary under 60 words, source excerpts
+under 200 characters, source locations drawn from the stated vocabulary, dates that resolve). No
+model, no network, and no accuracy claim: comparing the fixture-backed extractor against the
+fixtures would compare a file to itself and report 100% however broken the post-processor is.
+Regressions in post-processing are caught by `tests/test_extraction_fixtures.py`, which asserts
+concrete values, and by the scheduled online eval.
+
+Expectations are post-processed before comparison, so the fixture files stay in the model's own
+vocabulary (`10-16`, `weekday:friday@12:00`) and the date rules under test are production's.
 """
 
 from __future__ import annotations
@@ -15,9 +24,10 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
-from bidtriage.extraction.postprocess import postprocess
+from bidtriage.extraction.postprocess import location_label, postprocess
 from bidtriage.extraction.protocol import ExtractionInput, Extractor
 from bidtriage.extraction.schema import (
+    SOURCE_EXCERPT_CHARS,
     ExtractedOpportunity,
     Kind,
     LLMExtraction,
@@ -181,4 +191,123 @@ def format_report(report: EvalReport, *, cases: bool = True) -> Sequence[str]:
     for f in report.fields:
         gate = f" (gate {f.threshold:.0%}: {'PASS' if f.passed else 'FAIL'})" if f.threshold else ""
         lines.append(f"  {f.name:<16} {f.correct}/{f.total} {f.ratio:.0%}{gate}")
+    return lines
+
+
+# ------------------------------------------------------------------ corpus validation
+
+
+@dataclass
+class CorpusProblem:
+    name: str
+    detail: str
+
+
+@dataclass
+class CorpusReport:
+    """What the offline pass can honestly establish about the fixture corpus."""
+
+    checked: int = 0
+    problems: list[CorpusProblem] = field(default_factory=list)
+    kinds: dict[str, int] = field(default_factory=dict)
+    with_due_date: int = 0
+    with_attachment_sources: int = 0
+    flags: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
+_SOURCED = ("project_name", "project_number", "gc_name", "owner_name", "architect_engineer")
+
+
+_ALL_SOURCED = (
+    *_SOURCED,
+    "location",
+    "size_signals",
+    "bid_due",
+    "prebid",
+    "rfi_deadline",
+    "intent_due",
+)
+
+
+def _field_problems(expectation: LLMExtraction, record: ExtractedOpportunity) -> list[str]:
+    """The F2 invariants a fixture must satisfy whatever the model would have said.
+
+    Checked against the expectation as written, not the post-processed record: the post-processor
+    truncates an over-long excerpt and drops an invalid location, so reading the record back would
+    only confirm that the post-processor works. The point here is whether the *label* is right.
+    """
+    out: list[str] = []
+    for label in _ALL_SOURCED:
+        stated = getattr(expectation, label)
+        source = getattr(stated, "source", None)
+        if source is not None and len(source) > SOURCE_EXCERPT_CHARS:
+            out.append(
+                f"{label}.source is {len(source)} chars, over the {SOURCE_EXCERPT_CHARS} cap"
+            )
+        location = getattr(stated, "source_location", None)
+        if location is not None and location_label(location) != location:
+            out.append(f"{label}.source_location {location!r} is outside the F2 vocabulary")
+    stated_words = len(expectation.summary.split())
+    if stated_words > 60:
+        out.append(f"summary is {stated_words} words, over the 60-word cap")
+    if not record.summary:
+        out.append("summary is empty after post-processing")
+    if not 0.0 <= record.kind_confidence <= 1.0:
+        out.append(f"kind_confidence {record.kind_confidence} is outside 0..1")
+    return out
+
+
+def validate_corpus(cases: Iterable[EvalCase]) -> CorpusReport:
+    """Post-process every fixture and check it against the F2 invariants. No model, no network."""
+    report = CorpusReport()
+    for case in cases:
+        report.checked += 1
+        try:
+            record = postprocess(case.expected, case.item.sent_at)
+        except Exception as e:  # noqa: BLE001 - a fixture that cannot post-process is the finding
+            report.problems.append(CorpusProblem(case.name, f"{type(e).__name__}: {e}"))
+            continue
+        for detail in _field_problems(case.expected, record):
+            report.problems.append(CorpusProblem(case.name, detail))
+        report.kinds[record.kind.value] = report.kinds.get(record.kind.value, 0) + 1
+        if record.bid_due.value is not None:
+            report.with_due_date += 1
+        locations = [
+            getattr(getattr(record, f), "source_location", None)
+            for f in (*_SOURCED, "location", "bid_due")
+        ]
+        if any(loc and loc.startswith("attachment:") for loc in locations):
+            report.with_attachment_sources += 1
+        for flag in record.flags:
+            report.flags[flag.value] = report.flags.get(flag.value, 0) + 1
+        # A stated date that does not resolve is a broken fixture, not a low-accuracy one.
+        for label in ("bid_due", "rfi_deadline", "intent_due"):
+            stated = getattr(case.expected, label).value
+            resolved = getattr(record, label).value
+            if stated and resolved is None:
+                report.problems.append(
+                    CorpusProblem(case.name, f"{label} {stated!r} did not resolve to a datetime")
+                )
+    return report
+
+
+def format_corpus_report(report: CorpusReport) -> Sequence[str]:
+    lines = [f"{report.checked} fixture(s) validated against the SPEC-02 F2 invariants"]
+    kinds = ", ".join(f"{k} {n}" for k, n in sorted(report.kinds.items()))
+    lines.append(f"  kinds: {kinds}")
+    lines.append(f"  with a resolved bid due date: {report.with_due_date}")
+    lines.append(f"  sourcing a field to an attachment: {report.with_attachment_sources}")
+    if report.flags:
+        lines.append("  flags: " + ", ".join(f"{k} {n}" for k, n in sorted(report.flags.items())))
+    for p in report.problems:
+        lines.append(f"  PROBLEM {p.name}: {p.detail}")
+    lines.append("")
+    lines.append(
+        "Accuracy is not measured here: the fixture-backed extractor returns the fixtures. "
+        "Run `make eval-extraction` against the model for the SPEC-02 gates."
+    )
     return lines

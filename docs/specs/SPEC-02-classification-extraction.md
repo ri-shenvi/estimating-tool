@@ -166,5 +166,6 @@ Fixtures live in `tests/fixtures/messages/` as `.eml` files with an adjacent `.e
 ## Technical Notes
 
 - Prompt and schema are versioned together (`prompts/extract_v{n}.md`, `schemas/opportunity_v{n}.py`); the eval harness (`make eval-extraction`) runs every fixture and reports per-field accuracy; CI fails if due-date accuracy drops below 97% on the fixture set.
+  - As built, that gate runs against the model weekly and on demand (`.github/workflows/extraction-eval.yml`), not on every push: the offline extractor returns the same `.expected.json` the comparison reads, so an offline gate would report 100% however broken the post-processor is. Per-push CI runs `make validate-fixtures` (schema, post-processing and the F2 invariants) and `tests/test_extraction_fixtures.py`, which asserts concrete per-case values and is what actually catches a post-processing regression.
 - Structured outputs guarantee schema validity; they do not guarantee truthfulness. The post-processor enforces the date rules above regardless of what the model returned.
 - Costs: ~4–8K input tokens per message; at 200 messages/day this is a few dollars a day on Opus 5.5. Not worth batch mode; latency of a few seconds is fine.

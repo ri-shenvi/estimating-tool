@@ -354,18 +354,41 @@ def load_eval_cases(fixtures: Path) -> list[Any]:
 def eval_extraction(
     fixtures: Path,
     offline: bool = typer.Option(
-        False, help="Only validate fixtures and post-processing; no API calls"
+        False,
+        help="Validate the fixture corpus only: schema, post-processing and the F2 invariants. "
+        "No API calls, and no accuracy measurement — see --help notes.",
     ),
 ) -> None:
-    """Run every fixture through the extractor and report per-field accuracy (SPEC-02)."""
-    from bidtriage.extraction.evaluate import evaluate, format_report
+    """Measure extraction accuracy against the fixture corpus (SPEC-02).
+
+    Without `--offline` this calls the configured model once per fixture and gates on the SPEC-02
+    goals: due date 97%, GC name 98%, project type 90%, size band 80%, ITB boundary 97%.
+
+    With `--offline` it checks the corpus instead. It cannot report accuracy: the offline extractor
+    reads the same `.expected.json` the comparison uses, so every field would match however broken
+    the post-processor is. Post-processing regressions are caught by `tests/test_extraction_fixtures.py`.
+    """
+    from bidtriage.extraction.evaluate import (
+        evaluate,
+        format_corpus_report,
+        format_report,
+        validate_corpus,
+    )
 
     cases = load_eval_cases(fixtures)
     if not cases:
         typer.echo(f"no fixtures with an .expected.json in {fixtures}")
         raise typer.Exit(1)
-    extractor = _extractor(fixtures) if offline else _extractor(None)
-    report = evaluate(cases, extractor)
+
+    if offline:
+        corpus = validate_corpus(cases)
+        for line in format_corpus_report(corpus):
+            typer.echo(line)
+        if not corpus.ok:
+            raise typer.Exit(2)
+        return
+
+    report = evaluate(cases, _extractor(None))
     for line in format_report(report):
         typer.echo(line)
     failures = report.gate_failures

@@ -29,5 +29,7 @@ jobs:
       - run: uv run mypy
       - run: uv run lint-imports
       - run: uv run pytest --cov=bidtriage --cov-report=term-missing
-      - name: extraction eval (fixtures, offline)
-        run: make eval-extraction-offline
+      # Not an accuracy gate: the offline extractor returns the fixtures it is compared against.
+      # Accuracy runs against the model in extraction-eval.yml.
+      - name: validate extraction fixtures (schema, post-processing, F2 invariants)
+        run: make validate-fixtures

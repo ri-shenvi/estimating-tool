@@ -8,6 +8,7 @@ the last word on.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import pytest
 
 from bidtriage.core.clock import BUSINESS_TZ
 from bidtriage.extraction.fake import FakeExtractor
-from bidtriage.extraction.prefilter import obviously_not_bid
+from bidtriage.extraction.prefilter import ATTACHMENT_SCAN_CHARS, obviously_not_bid
 from bidtriage.extraction.protocol import AttachmentText, ExtractionInput
 from bidtriage.extraction.schema import (
     KIND_REVIEW_CONFIDENCE,
@@ -301,3 +302,49 @@ def test_gc_email_due_date_keeps_the_quoted_sentence(record):  # type: ignore[no
     assert x.bid_due.value == _et(2026, 10, 16, 14) and x.bid_due.time_known
     assert x.bid_due.value.isoformat() == "2026-10-16T14:00:00-04:00"
     assert "Bids are due Thursday, October 16th at 2:00 PM." in x.bid_due.source
+
+
+# ------------------------------------------------------------------ the pre-filter's own inputs
+
+
+def test_prefilter_reads_attachments_before_skipping(fixtures_dir):  # type: ignore[no-untyped-def]
+    """SPEC-02 F1: a noisy subject over a real invitation letter must still reach the model.
+
+    The subject and body here are a platform digest; only the attachment says "bid". Skipping on
+    the subject alone would drop the invitation without leaving a trace anywhere.
+    """
+    item = _input(fixtures_dir, "vendor_newsletter")
+    assert obviously_not_bid(item)
+
+    with_itb = replace(
+        item,
+        attachments=[
+            AttachmentText(
+                filename="Invitation-to-Bid.pdf",
+                text="INVITATION TO BID. Bids are due October 20, 2026 at 2:00 PM.",
+            )
+        ],
+    )
+    assert not obviously_not_bid(with_itb)
+
+    # The filename alone is enough, even when the text layer failed to extract.
+    assert not obviously_not_bid(
+        replace(item, attachments=[AttachmentText(filename="ITB - Wexford MOB.pdf", text="")])
+    )
+    # A benign attachment on a newsletter is still a newsletter.
+    assert obviously_not_bid(
+        replace(item, attachments=[AttachmentText(filename="troffer-spec-sheet.pdf", text="5000K")])
+    )
+
+
+def test_prefilter_only_scans_the_head_of_an_attachment(fixtures_dir):  # type: ignore[no-untyped-def]
+    """F1 bounds the scan at 3,000 characters, so a spec book cannot turn the cheap path expensive."""
+    item = _input(fixtures_dir, "vendor_newsletter")
+    buried = replace(
+        item,
+        attachments=[
+            AttachmentText(filename="catalog.pdf", text=("filler " * 1_000) + "invitation to bid")
+        ],
+    )
+    assert len(buried.attachments[0].text) > ATTACHMENT_SCAN_CHARS
+    assert obviously_not_bid(buried)

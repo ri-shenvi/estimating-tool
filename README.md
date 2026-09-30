@@ -71,7 +71,8 @@ uv run bidtriage worker         # terminal 2 (add --fake-fixtures tests/fixtures
 | `bidtriage ingest-metrics` | Poll success rate, ingestion lag p50/p95, attachment and duplicate counts |
 | `bidtriage ingest-skips` | Messages ingestion gave up on, so a gap is never silent |
 | `bidtriage digest-preview` | Build the digest without sending |
-| `bidtriage eval-extraction tests/fixtures/messages [--offline]` | Per-field extraction accuracy against `.expected.json`; fails on the SPEC-02 gates |
+| `bidtriage eval-extraction tests/fixtures/messages` | Per-field extraction accuracy against `.expected.json`; fails on the SPEC-02 gates. Calls the model. |
+| `bidtriage eval-extraction ... --offline` | Validates the fixture corpus (schema, post-processing, F2 invariants). No model, and no accuracy claim. |
 | `bidtriage reextract [MESSAGE_ID]` | Re-extract one message, or queue every recent message left on an older prompt version |
 | `bidtriage calibrate labeled.csv` | Precision/recall of the Bid band against the chief estimator's labels |
 

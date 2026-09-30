@@ -279,3 +279,25 @@ def test_bare_month_day_has_no_time_and_modest_confidence():  # type: ignore[no-
     )
     assert x.bid_due.value == datetime(2026, 10, 16, tzinfo=BUSINESS_TZ)
     assert not x.bid_due.time_known and x.bid_due.confidence <= 0.8
+
+
+def test_source_location_vocabulary_is_closed_not_a_prefix_match():  # type: ignore[no-untyped-def]
+    """A location has to be openable. "body of the email" is prose, not a place in the message."""
+    from bidtriage.extraction.postprocess import location_label
+
+    assert location_label("subject") == "subject"
+    assert location_label("BODY") == "body"
+    assert location_label("attachment:ITB.pdf") == "attachment:ITB.pdf"
+    assert location_label("attachment:ITB.pdf:p3") == "attachment:ITB.pdf:p3"
+    # Filenames may contain colons; only a trailing :p<digits> is a page.
+    assert location_label("attachment:Report: Final.pdf:p12") == "attachment:Report: Final.pdf:p12"
+    assert location_label("attachment:ITB.pdf:p03") == "attachment:ITB.pdf:p3"
+    for junk in (
+        "body of the email",
+        "subjectively speaking",
+        "the body",
+        "attachment",
+        "attachment:",
+        "",
+    ):
+        assert location_label(junk) is None, junk
