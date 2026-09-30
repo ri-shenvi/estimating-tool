@@ -6,7 +6,14 @@
 <p><b>GC:</b> {{ (c.gc_name or {}).value }} · <b>Owner:</b> {{ (c.owner_name or {}).value or '—' }} · <b>Type:</b> {{ (c.project_type or 'unknown')|replace('_',' ') }} · <b>Bid type:</b> {{ c.bid_type }} · <b>Sector:</b> {{ c.sector }}</p>
 <p><b>Bid due:</b> {{ (c.bid_due or {}).value or 'unknown' }} <small title="{{ (c.bid_due or {}).source }}">(conf {{ (c.bid_due or {}).confidence }})</small>
  · <b>Pre-bid:</b> {{ (c.prebid or {}).value or '—' }}{% if (c.prebid or {}).mandatory %} <b>MANDATORY</b>{% endif %} · <b>RFIs due:</b> {{ (c.rfi_deadline or {}).value or '—' }}</p>
-<p><b>Location:</b> {{ (c.location or {}).raw or '—' }} · <b>Size:</b> {{ c.size_signals }}</p>
+{% set sz = c.size_signals or {} %}
+{% set size_parts = [] %}
+{% if sz.stated_electrical_value %}{% set _ = size_parts.append('$%s electrical'|format('{:,.0f}'.format(sz.stated_electrical_value))) %}{% endif %}
+{% if sz.stated_project_value %}{% set _ = size_parts.append('$%s total'|format('{:,.0f}'.format(sz.stated_project_value))) %}{% endif %}
+{% if sz.square_feet %}{% set _ = size_parts.append('{:,.0f} SF'.format(sz.square_feet)) %}{% endif %}
+{% if sz.stories %}{% set _ = size_parts.append('%s stories'|format(sz.stories)) %}{% endif %}
+{% if sz.units_or_beds %}{% set _ = size_parts.append('%s units/beds'|format(sz.units_or_beds)) %}{% endif %}
+<p><b>Location:</b> {{ (c.location or {}).raw or '—' }} · <b>Size:</b> <span title="{{ sz.source or '' }}">{{ size_parts|join(' · ') or '—' }}</span></p>
 <p><b>Scope:</b> {{ c.summary }}</p>
 <p><b>Scope items:</b> {% for s in c.scope_items or [] %}<span class="chip">{{ s|replace('_',' ') }}</span>{% endfor %} <b>Exclusions:</b> {{ c.exclusions_text or '—' }}</p>
 <p><b>Flags:</b> {% for f in o.flags %}<span class="chip">{{ f|replace('_',' ') }}</span>{% endfor %}</p>
