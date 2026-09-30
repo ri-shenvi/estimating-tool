@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 
 from bidtriage.core.blobs import BlobStore
 from bidtriage.core.config import get_settings
-from bidtriage.core.jobs import enqueue
+from bidtriage.core.jobs import JobFailedError, enqueue
 from bidtriage.core.models import Extraction, Job, Opportunity, RawMessage, Source, User
+from bidtriage.extraction.geocode import CachedGeocoder, Geocoder, NominatimGeocoder
 from bidtriage.extraction.protocol import Extractor
 from bidtriage.worker import ingest_job, pipeline
 
@@ -28,18 +29,48 @@ class Context:
         extractor: Extractor | None,
         sources: dict[str, Any] | None = None,
         blobs: BlobStore | None = None,
+        geocoder: Geocoder | None = None,
     ) -> None:
         self._extractor = extractor
         self.sources = sources or {}
         self.blobs = blobs
         self.settings = get_settings()
         self._source_fingerprints: dict[str, str] = {}
+        self._geocoder = geocoder
+        # Set by the job loop for the duration of one handler call, so a handler can see which
+        # attempt it is on (SPEC-02 F3 gives up after three).
+        self.job: Job | None = None
 
     @property
     def extractor(self) -> Extractor:
         if self._extractor is None:
             raise RuntimeError("no extractor configured for this context")
         return self._extractor
+
+    @property
+    def attempt(self) -> int:
+        return self.job.attempts if self.job is not None else 1
+
+    @property
+    def max_attempts(self) -> int:
+        if self.job is not None:
+            return self.job.max_attempts
+        return self.settings.extraction_max_attempts
+
+    def geocoder_for(self, session: Session) -> Geocoder | None:
+        """Geocoder wrapped in the per-session cache; None when geocoding is switched off."""
+        inner = self._geocoder
+        if inner is None:
+            if not self.settings.geocoder_url:
+                return None
+            inner = NominatimGeocoder(
+                self.settings.geocoder_url,
+                user_agent=self.settings.geocoder_user_agent,
+                email=self.settings.geocoder_email,
+                timeout=self.settings.geocoder_timeout_seconds,
+            )
+            self._geocoder = inner
+        return CachedGeocoder(session, inner)
 
     @property
     def home(self) -> tuple[float, float]:
@@ -100,18 +131,54 @@ def ingest_maintenance(session: Session, payload: dict[str, Any], ctx: Context) 
 
 
 def extract_message(session: Session, payload: dict[str, Any], ctx: Context) -> None:
+    _extract(session, payload, ctx, pipeline.extract_message)
+
+
+def reextract_message(session: Session, payload: dict[str, Any], ctx: Context) -> None:
+    """Re-run extraction on one message, keeping the old record (SPEC-02 F4)."""
+    _extract(session, payload, ctx, pipeline.reextract_message)
+
+
+def _extract(
+    session: Session,
+    payload: dict[str, Any],
+    ctx: Context,
+    run: Callable[..., Any],
+) -> None:
     msg = session.get(RawMessage, payload["message_id"])
     if msg is None:
         return
-    from bidtriage.core.models import MessageSource
+    try:
+        run(
+            session,
+            msg,
+            ctx.extractor,
+            external_ref=pipeline.external_ref_for(session, msg),
+            geocoder=ctx.geocoder_for(session),
+            attempt=ctx.attempt,
+            max_attempts=ctx.max_attempts,
+        )
+    except Exception as e:  # noqa: BLE001
+        # The message is now `retrying` or `failed`; that write has to survive the retry.
+        raise JobFailedError(f"extraction failed for {msg.id}: {e}") from e
 
-    link = session.scalar(select(MessageSource).where(MessageSource.message_id == msg.id))
-    ref = (
-        link.provider_message_id.rsplit(".", 1)[0]
-        if link and link.provider_message_id.endswith(".eml")
-        else None
+
+def retry_extractions(session: Session, payload: dict[str, Any], ctx: Context) -> None:
+    """Re-queue failed extractions so an API outage heals without anyone noticing (SPEC-02 F3)."""
+    queued = pipeline.enqueue_extraction_retries(
+        session, max_rounds=ctx.settings.extraction_max_retry_rounds
     )
-    pipeline.extract_message(session, msg, ctx.extractor, external_ref=ref)
+    if queued:
+        log.info("re-queued %d failed extraction(s)", queued)
+
+
+def reextract_stale_prompts(session: Session, payload: dict[str, Any], ctx: Context) -> None:
+    """After a prompt bump, walk recent messages back through extraction (SPEC-02 F4)."""
+    queued = pipeline.enqueue_stale_prompt_reextractions(
+        session, window_days=ctx.settings.reextraction_window_days
+    )
+    if queued:
+        log.info("queued %d re-extraction(s) for the current prompt version", queued)
 
 
 def resolve_message(session: Session, payload: dict[str, Any], ctx: Context) -> None:
@@ -216,6 +283,20 @@ def schedule_tick(session: Session, ctx: Context, now: datetime | None = None) -
                 priority=ingest_job.BACKFILL_PRIORITY,
             )
     enqueue(session, "unsnooze", f"unsnooze:{five}", {}, priority=90)
+    enqueue(
+        session,
+        "retry_extractions",
+        f"retry_extractions:{now.strftime('%Y%m%d%H')}",
+        {},
+        priority=96,
+    )
+    enqueue(
+        session,
+        "reextract_stale",
+        f"reextract_stale:{now.strftime('%Y%m%d')}",
+        {},
+        priority=pipeline.REEXTRACT_PRIORITY,
+    )
     enqueue(session, "check_sources", f"check_sources:{five}", {}, priority=40)
     enqueue(
         session,
@@ -254,6 +335,9 @@ HANDLERS: dict[str, Handler] = {
     "check_sources": check_sources,
     "ingest_maintenance": ingest_maintenance,
     "extract_message": extract_message,
+    "reextract_message": reextract_message,
+    "retry_extractions": retry_extractions,
+    "reextract_stale": reextract_stale_prompts,
     "resolve_message": resolve_message,
     "score_opportunity": score_opportunity,
     "rescore_all": rescore_all,

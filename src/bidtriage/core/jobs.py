@@ -18,6 +18,16 @@ from bidtriage.core.models import Job
 DEFAULT_LEASE = timedelta(minutes=10)
 
 
+class JobFailedError(Exception):
+    """A handler failure whose already-written state must survive the retry.
+
+    The job loop rolls the session back on an unexpected exception, which is right for a handler
+    that failed halfway. A handler that has deliberately recorded the failure — a message marked
+    `failed` so it reaches the digest's Needs review list — raises this instead, and the loop fails
+    the job on the same session so both the state and the backoff commit together.
+    """
+
+
 def enqueue(
     session: Session,
     kind: str,

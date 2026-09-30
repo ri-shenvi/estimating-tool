@@ -6,6 +6,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -301,58 +302,158 @@ def digest_preview(
     typer.echo(f"wrote {out}")
 
 
+def load_eval_cases(fixtures: Path) -> list[Any]:
+    """Every `.eml` in `fixtures` that has an adjacent `.expected.json`, parsed as an eval case."""
+    from bidtriage.extraction.evaluate import EvalCase
+    from bidtriage.extraction.protocol import AttachmentText, ExtractionInput
+    from bidtriage.extraction.schema import LLMExtraction
+    from bidtriage.ingestion.attachments import extract_text
+    from bidtriage.ingestion.eml import parse_eml
+    from bidtriage.ingestion.links import harvest_links
+
+    cases = []
+    for path in sorted(fixtures.glob("*.eml")):
+        expectation = path.with_suffix(".expected.json")
+        if not expectation.exists():
+            continue
+        parsed = parse_eml(path.read_bytes())
+        attachments = []
+        for a in parsed.attachments:
+            text = extract_text(a.filename, a.mime, a.data)
+            attachments.append(
+                AttachmentText(
+                    filename=a.filename,
+                    text=text.text or "",
+                    large_document=text.large_document,
+                )
+            )
+        cases.append(
+            EvalCase(
+                name=path.name,
+                item=ExtractionInput(
+                    message_id=path.stem,
+                    subject=parsed.subject,
+                    from_addr=parsed.from_addr,
+                    from_name=parsed.from_name,
+                    to=parsed.to,
+                    sent_at=parsed.sent_at or datetime.now(tz=UTC),
+                    body=parsed.body_trimmed,
+                    attachments=attachments,
+                    links=[
+                        str(lk["url"]) for lk in harvest_links(parsed.body_text, parsed.body_html)
+                    ],
+                    external_ref=path.stem,
+                ),
+                expected=LLMExtraction.model_validate(json.loads(expectation.read_text())),
+            )
+        )
+    return cases
+
+
 @app.command("eval-extraction")
 def eval_extraction(
     fixtures: Path,
     offline: bool = typer.Option(
-        False, help="Only validate fixtures and post-processing; no API calls"
+        False,
+        help="Validate the fixture corpus only: schema, post-processing and the F2 invariants. "
+        "No API calls, and no accuracy measurement — see --help notes.",
     ),
 ) -> None:
-    """Run every fixture through the extractor and compare to .expected.json (SPEC-02 metrics)."""
-    from bidtriage.extraction.fake import FakeExtractor
-    from bidtriage.extraction.protocol import ExtractionInput
-    from bidtriage.extraction.schema import LLMExtraction
-    from bidtriage.ingestion.eml import parse_eml
+    """Measure extraction accuracy against the fixture corpus (SPEC-02).
 
-    paths = sorted(fixtures.glob("*.eml"))
-    if not paths:
-        typer.echo("no fixtures")
-        raise typer.Exit(1)
-    extractor = FakeExtractor(fixtures) if offline else _extractor(None)
-    total = ok_kind = ok_due = ok_gc = ok_type = 0
-    for p in paths:
-        exp_path = p.with_suffix(".expected.json")
-        if not exp_path.exists():
-            continue
-        expected = LLMExtraction.model_validate(json.loads(exp_path.read_text()))
-        parsed = parse_eml(p.read_bytes())
-        item = ExtractionInput(
-            message_id=p.stem,
-            subject=parsed.subject,
-            from_addr=parsed.from_addr,
-            from_name=parsed.from_name,
-            to=parsed.to,
-            sent_at=parsed.sent_at or datetime.now(tz=UTC),
-            body=parsed.body_trimmed,
-            external_ref=p.stem,
-        )
-        got = extractor.extract(item)
-        total += 1
-        ok_kind += got.kind == expected.kind
-        ok_gc += (got.gc_name.value or "").lower() == (expected.gc_name.value or "").lower()
-        ok_type += got.project_type == expected.project_type
-        exp_due = expected.bid_due.value[:10] if expected.bid_due.value else None
-        got_due = got.bid_due.value.date().isoformat() if got.bid_due.value else None
-        ok_due += exp_due == got_due
-        typer.echo(
-            f"{p.name}: kind={got.kind.value} due={got_due} gc={got.gc_name.value} type={got.project_type.value}"
-        )
-    typer.echo(
-        f"\n{total} fixtures · kind {ok_kind}/{total} · due date {ok_due}/{total} · gc {ok_gc}/{total} · type {ok_type}/{total}"
+    Without `--offline` this calls the configured model once per fixture and gates on the SPEC-02
+    goals: due date 97%, GC name 98%, project type 90%, size band 80%, ITB boundary 97%.
+
+    With `--offline` it checks the corpus instead. It cannot report accuracy: the offline extractor
+    reads the same `.expected.json` the comparison uses, so every field would match however broken
+    the post-processor is. Post-processing regressions are caught by `tests/test_extraction_fixtures.py`.
+    """
+    from bidtriage.extraction.evaluate import (
+        evaluate,
+        format_corpus_report,
+        format_report,
+        validate_corpus,
     )
-    if total and ok_due / total < 0.97:
-        typer.echo("FAIL: due-date accuracy below 97%")
+
+    cases = load_eval_cases(fixtures)
+    if not cases:
+        typer.echo(f"no fixtures with an .expected.json in {fixtures}")
+        raise typer.Exit(1)
+
+    if offline:
+        corpus = validate_corpus(cases)
+        for line in format_corpus_report(corpus):
+            typer.echo(line)
+        if not corpus.ok:
+            raise typer.Exit(2)
+        return
+
+    report = evaluate(cases, _extractor(None))
+    for line in format_report(report):
+        typer.echo(line)
+    failures = report.gate_failures
+    if failures or report.errors:
+        for f in failures:
+            typer.echo(f"FAIL: {f.name} accuracy {f.ratio:.0%} below {f.threshold:.0%}")
         raise typer.Exit(2)
+
+
+@app.command("reextract")
+def reextract(
+    message_id: str = typer.Argument("", help="Message id; omit to sweep a stale prompt version"),
+    fake_fixtures: Path | None = typer.Option(None, help="Fixture-backed extractor"),
+    window_days: int | None = typer.Option(
+        None, help="Sweep window for a prompt bump (default REEXTRACTION_WINDOW_DAYS)"
+    ),
+    queue: bool = typer.Option(
+        False, help="Queue the work for the worker instead of running it now"
+    ),
+) -> None:
+    """Re-extract one message, or queue re-extraction of everything on an older prompt (SPEC-02 F4)."""
+    from bidtriage.core.config import get_settings
+    from bidtriage.core.db import session_scope
+    from bidtriage.core.models import RawMessage
+    from bidtriage.extraction.prompts import PROMPT_VERSION
+    from bidtriage.worker import pipeline
+    from bidtriage.worker.handlers import Context
+
+    settings = get_settings()
+    with session_scope() as s:
+        if not message_id:
+            n = pipeline.enqueue_stale_prompt_reextractions(
+                s, window_days=window_days or settings.reextraction_window_days
+            )
+            typer.echo(f"queued {n} message(s) for re-extraction on prompt {PROMPT_VERSION}")
+            return
+        msg = s.get(RawMessage, message_id)
+        if msg is None:
+            typer.echo(f"no such message {message_id}")
+            raise typer.Exit(1)
+        if queue:
+            from bidtriage.core.jobs import enqueue
+
+            enqueue(
+                s,
+                "reextract_message",
+                f"reextract:{msg.id}:cli:{datetime.now(tz=UTC).isoformat()}",
+                {"message_id": msg.id},
+                priority=60,
+            )
+            typer.echo(f"queued re-extraction of {msg.id}")
+            return
+        ctx = Context(_extractor(fake_fixtures))
+        ext = pipeline.reextract_message(
+            s,
+            msg,
+            ctx.extractor,
+            external_ref=pipeline.external_ref_for(s, msg),
+            geocoder=ctx.geocoder_for(s),
+        )
+        typer.echo(
+            f"{msg.id}: {msg.kind} (v{ext.version} prompt {ext.prompt_version})"
+            if ext
+            else f"{msg.id}: skipped by the pre-filter"
+        )
 
 
 @app.command()

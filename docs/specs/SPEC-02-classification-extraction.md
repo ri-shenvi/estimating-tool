@@ -1,6 +1,6 @@
 # SPEC-02: Message Classification and Opportunity Extraction
 
-**Status:** Draft · **Priority:** P0 · **Depends on:** SPEC-01 · **Feeds:** SPEC-03, SPEC-04, SPEC-05
+**Status:** Implemented · **Priority:** P0 · **Depends on:** SPEC-01 · **Feeds:** SPEC-03, SPEC-04, SPEC-05
 
 ## Problem
 
@@ -117,18 +117,18 @@ ExtractedOpportunity
 
 ## Acceptance Criteria
 
-- [ ] Given a BuildingConnected invitation email from "Jane Doe (PJ Dick)" via `team@buildingconnected.com`, when extracted, then `gc_name="PJ Dick"`, `delivery_channel=buildingconnected`, and the sender address is not used as a contact email.
-- [ ] Given a GC email whose body says "Bids are due Thursday, October 16th at 2 PM" sent on 2026-09-30, when extracted, then `bid_due.datetime = 2026-10-16T14:00-04:00`, `time_known=true`, and `source` contains the quoted sentence.
-- [ ] Given a body that says only "bids due 10/16", when extracted, then the date is 2026-10-16, `time_known=false`, confidence ≤ 0.8.
-- [ ] Given a PDF letter with "MANDATORY pre-bid conference: Tuesday, October 7, 2026 at 10:00 AM, at the site", when extracted, then `prebid.mandatory=true` and `flags` contains `mandatory_prebid`.
-- [ ] Given the subject "ADDENDUM #2 – Allegheny Health Network – Wexford MOB", when classified, then `kind=addendum`, `addendum_number=2`.
-- [ ] Given a Procore correspondence "The bid due date has been extended to October 21 at 2:00 PM", when classified, then `kind=date_change`, `bid_due` is 2026-10-21T14:00 and `changes_described` quotes the sentence.
-- [ ] Given a public advertisement listing "General, HVAC, Plumbing and Electrical prime contracts", when extracted, then `sector=public`, `bid_type=hard_bid`, `flags` contains `prevailing_wage` if stated and `sealed_bid`, and `trade_relevance=primary`.
-- [ ] Given a "Roofing bid package" ITB, when extracted, then `kind=itb`, `trade_relevance=none`.
-- [ ] Given a message whose body is empty and whose only content is an attached ITB PDF, when extracted, then all fields come from the attachment and each `source.location` starts with `attachment:`.
-- [ ] Given a vendor newsletter from a lighting rep, when classified, then `kind=not_bid` and no extraction is run.
-- [ ] Given an API outage, when extraction fails 3 times, then the message is marked `extraction_failed`, appears in the next digest's Needs review, and is retried automatically when the API recovers.
-- [ ] Given the same message extracted twice with the same prompt version, then the two records are field-for-field identical except `extraction_meta`.
+- [x] Given a BuildingConnected invitation email from "Jane Doe (PJ Dick)" via `team@buildingconnected.com`, when extracted, then `gc_name="PJ Dick"`, `delivery_channel=buildingconnected`, and the sender address is not used as a contact email.
+- [x] Given a GC email whose body says "Bids are due Thursday, October 16th at 2 PM" sent on 2026-09-30, when extracted, then `bid_due.datetime = 2026-10-16T14:00-04:00`, `time_known=true`, and `source` contains the quoted sentence.
+- [x] Given a body that says only "bids due 10/16", when extracted, then the date is 2026-10-16, `time_known=false`, confidence ≤ 0.8.
+- [x] Given a PDF letter with "MANDATORY pre-bid conference: Tuesday, October 7, 2026 at 10:00 AM, at the site", when extracted, then `prebid.mandatory=true` and `flags` contains `mandatory_prebid`.
+- [x] Given the subject "ADDENDUM #2 – Allegheny Health Network – Wexford MOB", when classified, then `kind=addendum`, `addendum_number=2`.
+- [x] Given a Procore correspondence "The bid due date has been extended to October 21 at 2:00 PM", when classified, then `kind=date_change`, `bid_due` is 2026-10-21T14:00 and `changes_described` quotes the sentence.
+- [x] Given a public advertisement listing "General, HVAC, Plumbing and Electrical prime contracts", when extracted, then `sector=public`, `bid_type=hard_bid`, `flags` contains `prevailing_wage` if stated and `sealed_bid`, and `trade_relevance=primary`.
+- [x] Given a "Roofing bid package" ITB, when extracted, then `kind=itb`, `trade_relevance=none`.
+- [x] Given a message whose body is empty and whose only content is an attached ITB PDF, when extracted, then all fields come from the attachment and each `source.location` starts with `attachment:`.
+- [x] Given a vendor newsletter from a lighting rep, when classified, then `kind=not_bid` and no extraction is run.
+- [x] Given an API outage, when extraction fails 3 times, then the message is marked `extraction_failed`, appears in the next digest's Needs review, and is retried automatically when the API recovers.
+- [x] Given the same message extracted twice with the same prompt version, then the two records are field-for-field identical except `extraction_meta`.
 
 ## Edge Cases and Required Tests
 
@@ -166,5 +166,6 @@ Fixtures live in `tests/fixtures/messages/` as `.eml` files with an adjacent `.e
 ## Technical Notes
 
 - Prompt and schema are versioned together (`prompts/extract_v{n}.md`, `schemas/opportunity_v{n}.py`); the eval harness (`make eval-extraction`) runs every fixture and reports per-field accuracy; CI fails if due-date accuracy drops below 97% on the fixture set.
+  - As built, that gate runs against the model weekly and on demand (`.github/workflows/extraction-eval.yml`), not on every push: the offline extractor returns the same `.expected.json` the comparison reads, so an offline gate would report 100% however broken the post-processor is. Per-push CI runs `make validate-fixtures` (schema, post-processing and the F2 invariants) and `tests/test_extraction_fixtures.py`, which asserts concrete per-case values and is what actually catches a post-processing regression.
 - Structured outputs guarantee schema validity; they do not guarantee truthfulness. The post-processor enforces the date rules above regardless of what the model returned.
 - Costs: ~4–8K input tokens per message; at 200 messages/day this is a few dollars a day on Opus 5.5. Not worth batch mode; latency of a few seconds is fine.

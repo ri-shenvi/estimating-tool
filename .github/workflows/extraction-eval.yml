@@ -1,0 +1,28 @@
+name: extraction-eval
+
+# The real SPEC-02 accuracy gate: due date 97%, GC name 98%, project type 90%, size band 80% and
+# the ITB / not-ITB boundary 97%. It calls the model once per fixture, so it cannot run on every
+# push — CI validates the corpus instead (see ci.yml) and this runs weekly and on demand.
+on:
+  schedule:
+    - cron: "17 7 * * 1" # Mondays, 07:17 UTC
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv sync --all-groups
+      - name: require a key
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not set; the accuracy gates only mean something against the model"
+            exit 1
+          fi
+      - name: extraction accuracy against the fixture corpus
+        run: make eval-extraction

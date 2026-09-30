@@ -11,7 +11,8 @@ from bidtriage.core.blobs import get_blob_store
 from bidtriage.core.clock import aware
 from bidtriage.core.config import get_settings
 from bidtriage.core.crypto import sha256_hex
-from bidtriage.core.models import GC, AuditEvent, ScoringProfile, Source
+from bidtriage.core.jobs import enqueue
+from bidtriage.core.models import GC, AuditEvent, RawMessage, ScoringProfile, Source
 from bidtriage.ingestion.health import source_health
 from bidtriage.ingestion.msg import parse_upload
 from bidtriage.scoring.profile import Profile
@@ -48,6 +49,13 @@ def home(
         }
         for s in session.scalars(select(Source).order_by(Source.name)).all()
     ]
+    review = [
+        {
+            "msg": m,
+            "extraction": pipeline.latest_extraction(session, m.id),
+        }
+        for m in pipeline.messages_needing_review(session)
+    ]
     profiles = session.scalars(select(ScoringProfile).order_by(ScoringProfile.version.desc())).all()
     gcs = session.scalars(select(GC).order_by(GC.canonical_name)).all()
     return _templates().TemplateResponse(
@@ -55,6 +63,7 @@ def home(
         "admin.html",
         {
             "sources": sources,
+            "review": review,
             "profiles": profiles,
             "gcs": gcs,
             "user": user,
@@ -152,6 +161,44 @@ async def upload_message(
         )
     )
     return RedirectResponse(f"/admin/?uploaded={'new' if is_new else 'duplicate'}", status_code=303)
+
+
+@router.post("/messages/{message_id}/reextract")
+def reextract_message(
+    message_id: str,
+    session: Session = Depends(db),
+    user: CurrentUser = Depends(require_role("admin", "chief", "estimator")),
+):
+    """Queue a fresh extraction for one message (SPEC-02 F4).
+
+    Queued rather than run inline: it is an LLM call, and the estimator should not wait on it. The
+    existing record stays until the new one lands, then points at it via `superseded_by`.
+    """
+    msg = session.get(RawMessage, message_id)
+    if msg is None:
+        raise HTTPException(404)
+    now = datetime.now(tz=UTC)
+    enqueue(
+        session,
+        "reextract_message",
+        f"reextract:{msg.id}:manual:{now.isoformat()}",
+        {"message_id": msg.id},
+        priority=60,
+    )
+    session.add(
+        AuditEvent(
+            actor_user_id=None if user.id == "dev" else user.id,
+            role=user.role,
+            action="message.reextract",
+            entity_type="raw_message",
+            entity_id=msg.id,
+            before={"kind": msg.kind, "status": msg.extraction_status},
+            after=None,
+            channel="admin",
+            created_at=now,
+        )
+    )
+    return RedirectResponse("/admin/?reextract=queued#review", status_code=303)
 
 
 @router.post("/gcs/{gc_id}/tier")

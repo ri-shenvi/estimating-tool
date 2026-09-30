@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     extraction_effort: str = Field(default="medium", alias="EXTRACTION_EFFORT")
     llm_daily_spend_cap_usd: float = Field(default=25.0, alias="LLM_DAILY_SPEND_CAP_USD")
 
+    # SPEC-02: classification and extraction
+    extraction_max_attempts: int = Field(default=3, alias="EXTRACTION_MAX_ATTEMPTS")
+    extraction_max_retry_rounds: int = Field(default=24, alias="EXTRACTION_MAX_RETRY_ROUNDS")
+    reextraction_window_days: int = Field(default=30, alias="REEXTRACTION_WINDOW_DAYS")
+    geocoder_url: str | None = Field(
+        default="https://nominatim.openstreetmap.org/search", alias="GEOCODER_URL"
+    )
+    geocoder_user_agent: str = Field(default="bidtriage/0.1", alias="GEOCODER_USER_AGENT")
+    geocoder_email: str | None = Field(default=None, alias="GEOCODER_EMAIL")
+    geocoder_timeout_seconds: float = Field(default=5.0, alias="GEOCODER_TIMEOUT_SECONDS")
+
     digest_time: str = Field(default="06:30", alias="DIGEST_TIME")
     digest_timezone: str = Field(default="America/New_York", alias="DIGEST_TIMEZONE")
     digest_from: str = Field(default="bids@example.com", alias="DIGEST_FROM")

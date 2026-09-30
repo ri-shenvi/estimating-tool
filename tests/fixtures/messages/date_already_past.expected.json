@@ -1,0 +1,63 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.92,
+  "project_name": {
+    "value": "Baldwin Borough Salt Storage Building",
+    "confidence": 0.92,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Nello Construction",
+    "confidence": 0.95,
+    "source": "Nello is pricing the Baldwin Borough salt storage building",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Sam Nello",
+      "email": "snello@nello.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Baldwin Borough",
+    "confidence": 0.85,
+    "source": "Baldwin Borough salt storage building",
+    "source_location": "body"
+  },
+  "location": {
+    "raw": "3344 Churchview Avenue, Pittsburgh, PA 15227",
+    "street": "3344 Churchview Avenue",
+    "city": "Pittsburgh",
+    "state": "PA",
+    "postal_code": "15227",
+    "confidence": 0.95,
+    "source": "3344 Churchview Avenue, Pittsburgh, PA 15227",
+    "source_location": "body"
+  },
+  "project_type": "government_civic",
+  "project_type_confidence": 0.85,
+  "new_or_renovation": "new",
+  "bid_type": "hard_bid",
+  "sector": "public",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "10-06",
+    "timezone": null,
+    "time_known": false,
+    "confidence": 0.9,
+    "source": "bids due 10/6",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "site_lighting"
+  ],
+  "scope_text": "Electrical is service, branch power, high-bay lighting and site lighting.",
+  "trade_relevance": "primary",
+  "summary": "Salt storage building for Baldwin Borough with Nello. Service, branch power, high-bay lighting and site lighting. The stated due date has already passed."
+}

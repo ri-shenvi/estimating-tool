@@ -27,6 +27,7 @@ from bidtriage.decisions.tokens import sign_action
 from bidtriage.digest.render import render_html, render_text, subject_line
 from bidtriage.digest.sender import send_email
 from bidtriage.digest.snapshot import DigestItem, HealthLine, ReviewItem, assemble
+from bidtriage.extraction.schema import KIND_REVIEW_CONFIDENCE
 from bidtriage.ingestion.health import OK, source_health
 from bidtriage.scoring.engine import ScoreResult
 from bidtriage.worker.ingest_job import pending_skips
@@ -199,19 +200,20 @@ def review_items(session: Session, base_url: str) -> list[ReviewItem]:
             ReviewItem(
                 kind="extraction_failed",
                 title=f"{m.subject[:70]} — {m.from_addr}",
-                url=f"{base_url}/admin/",
+                url=f"{base_url}/admin/#review",
             )
         )
     for m in session.scalars(
         select(RawMessage).where(
-            RawMessage.kind_confidence < 0.6, RawMessage.extraction_status == "done"
+            RawMessage.kind_confidence < KIND_REVIEW_CONFIDENCE,
+            RawMessage.extraction_status == "done",
         )
     ).all():
         out.append(
             ReviewItem(
                 kind="low_confidence_kind",
                 title=f"{m.subject[:70]} ({m.kind})",
-                url=f"{base_url}/admin/",
+                url=f"{base_url}/admin/#review",
             )
         )
     for skip in pending_skips(session):

@@ -1,0 +1,41 @@
+{
+  "kind": "addendum",
+  "kind_confidence": 0.97,
+  "project_name": {
+    "value": "AHN Wexford MOB",
+    "confidence": 0.93,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Mascaro Construction",
+    "confidence": 0.96,
+    "source": "Mascaro Construction",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Bob Builder",
+      "email": "bbuilder@mascaroconstruction.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Allegheny Health Network",
+    "confidence": 0.92,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "project_type": "healthcare",
+  "project_type_confidence": 0.85,
+  "delivery_channel": "email",
+  "addendum_label": "Addendum 2",
+  "addendum_number": 2,
+  "changes_described": "It revises the panel schedules on E4.1 and adds two exam room circuits.",
+  "scope_items": [
+    "branch_power"
+  ],
+  "trade_relevance": "primary",
+  "summary": "Addendum 2 on the AHN Wexford medical office building revises panel schedules on E4.1 and adds two exam room circuits."
+}

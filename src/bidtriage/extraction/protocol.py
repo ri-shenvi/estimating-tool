@@ -30,3 +30,19 @@ class ExtractionInput:
 
 class Extractor(Protocol):
     def extract(self, item: ExtractionInput) -> ExtractedOpportunity: ...
+
+
+class ExtractionError(RuntimeError):
+    """An extraction that did not produce a record. Retried; then surfaced (SPEC-02 F3)."""
+
+    category = "error"
+
+
+class ExtractionRefusedError(ExtractionError):
+    """The model declined. Retried like any failure, but never swept for retry as an outage."""
+
+    category = "refusal"
+
+
+def error_category(exc: BaseException) -> str:
+    return getattr(exc, "category", "error") if isinstance(exc, ExtractionError) else "error"

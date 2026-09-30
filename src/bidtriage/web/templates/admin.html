@@ -23,6 +23,22 @@ lag p50 {{ ingestion.lag_p50_seconds|round(1) if ingestion.lag_p50_seconds is no
 p95 {{ ingestion.lag_p95_seconds|round(1) if ingestion.lag_p95_seconds is not none else 'n/a' }}s</p>
 {% if request.query_params.get('uploaded') %}<p><em>Upload accepted: {{ request.query_params.get('uploaded') }}.</em></p>{% endif %}
 </div>
+<div class="card" id="review"><h2>Needs review ({{ review|length }})</h2>
+<p><small>Extraction failures and classifications the model was unsure of. Nothing here was dropped: a
+low-confidence message is still processed as its best guess.</small></p>
+{% if request.query_params.get('reextract') %}<p><em>Re-extraction queued; the record updates when the worker picks it up.</em></p>{% endif %}
+<table><tr><th>Received</th><th>Subject</th><th>From</th><th>Kind</th><th>Status</th><th></th></tr>
+{% for r in review %}<tr>
+<td>{{ r.msg.received_at.strftime('%Y-%m-%d %H:%M') }}</td>
+<td>{{ r.msg.subject[:80] or '(no subject)' }}{% if r.extraction %}<br><small>prompt {{ r.extraction.prompt_version }} &middot; {{ r.extraction.model }}</small>{% endif %}</td>
+<td>{{ r.msg.from_name or r.msg.from_addr }}</td>
+<td>{{ r.msg.kind or '-' }}{% if r.msg.kind_confidence is not none %} <small>({{ '%.2f'|format(r.msg.kind_confidence) }})</small>{% endif %}</td>
+<td><strong>{{ r.msg.extraction_status }}</strong>{% if r.msg.extraction_attempts %} <small>after {{ r.msg.extraction_attempts }} attempt(s)</small>{% endif %}
+{% if r.msg.extraction_error %}<br><small>{{ r.msg.extraction_error[:160] }}</small>{% endif %}</td>
+<td><form class="inline" method="post" action="/admin/messages/{{ r.msg.id }}/reextract"><button>Re-extract</button></form></td>
+</tr>
+{% else %}<tr><td colspan="6">Nothing to review.</td></tr>{% endfor %}
+</table></div>
 <div class="card"><h2>Scoring profiles</h2>
 <table><tr><th>v</th><th>Name</th><th>Active</th><th>Note</th><th></th></tr>
 {% for p in profiles %}<tr><td>{{ p.version }}</td><td>{{ p.json.name }}</td><td>{{ '✓' if p.active else '' }}</td><td>{{ p.note }}</td><td>{% if not p.active %}<form class="inline" method="post" action="/admin/profiles/{{ p.version }}/activate"><button>Activate</button></form>{% endif %}</td></tr>{% endfor %}

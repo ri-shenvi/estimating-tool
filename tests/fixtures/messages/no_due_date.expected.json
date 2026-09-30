@@ -1,0 +1,70 @@
+{
+  "kind": "prebid_notice",
+  "kind_confidence": 0.93,
+  "project_name": {
+    "value": "Hazelwood Green Parcel C Parking Structure",
+    "confidence": 0.93,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Mosites Construction",
+    "confidence": 0.97,
+    "source": "Mosites Construction will hold a pre-bid meeting",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Dale Mosites",
+      "email": "dmosites@mosites.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "location": {
+    "raw": "4800 Second Avenue, Pittsburgh, PA 15207",
+    "street": "4800 Second Avenue",
+    "city": "Pittsburgh",
+    "state": "PA",
+    "postal_code": "15207",
+    "confidence": 0.95,
+    "source": "4800 Second Avenue, Pittsburgh, PA 15207",
+    "source_location": "body"
+  },
+  "project_type": "parking_transportation",
+  "project_type_confidence": 0.94,
+  "new_or_renovation": "new",
+  "sector": "private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": null,
+    "timezone": null,
+    "time_known": false,
+    "confidence": 0.0,
+    "source": null,
+    "source_location": "body"
+  },
+  "prebid": {
+    "value": "2026-10-09T10:00:00",
+    "timezone": null,
+    "location": "site trailer",
+    "mandatory": null,
+    "confidence": 0.95,
+    "source": "on October 9 at 10:00 AM in the site trailer",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "lighting",
+    "lighting_controls",
+    "site_lighting",
+    "ev_charging",
+    "fire_alarm"
+  ],
+  "scope_text": "Electrical scope will include service and distribution, garage lighting and controls, site lighting, EV charging rough-in and a fire alarm system.",
+  "flags": [
+    "plans_not_yet_available"
+  ],
+  "trade_relevance": "primary",
+  "summary": "Pre-bid meeting for the Hazelwood Green Parcel C parking structure with Mosites. Electrical will cover service and distribution, garage and site lighting with controls, EV charging rough-in and fire alarm. Drawings are still in review."
+}

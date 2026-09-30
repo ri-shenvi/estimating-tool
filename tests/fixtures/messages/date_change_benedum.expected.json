@@ -1,26 +1,117 @@
 {
-  "kind": "addendum", "kind_confidence": 0.96,
-  "project_name": {"value": "Benedum Hall Lab Renovation", "confidence": 0.95, "source": "subject"},
-  "project_number": {"value": null, "confidence": 0, "source": null},
-  "gc_name": {"value": "PJ Dick", "confidence": 0.95, "source": "jdoe@pjdick.com"},
-  "gc_contacts": [{"name": "Jane Doe", "email": "jdoe@pjdick.com", "phone": null, "role": null}],
-  "owner_name": {"value": null, "confidence": 0, "source": null},
-  "architect_engineer": {"value": null, "confidence": 0, "source": null},
-  "location": {"raw": null, "street": null, "city": null, "state": null, "postal_code": null, "confidence": 0, "source": null},
-  "project_type": "higher_education", "project_type_confidence": 0.8, "project_subtype": null,
-  "new_or_renovation": "renovation", "bid_type": "unknown", "sector": "unknown", "delivery_channel": "email",
-  "bid_due": {"value": "2026-10-21T14:00:00", "timezone": null, "time_known": true, "confidence": 0.98, "source": "the bid due date has been extended to Wednesday, October 21 at 2:00 PM"},
-  "prebid": {"value": null, "timezone": null, "location": null, "mandatory": null, "confidence": 0, "source": null},
-  "rfi_deadline": {"value": null, "timezone": null, "time_known": false, "confidence": 0, "source": null},
-  "intent_due": {"value": null, "timezone": null, "time_known": false, "confidence": 0, "source": null},
-  "anticipated_start": null, "duration_months": null,
-  "size_signals": {"stated_project_value": null, "stated_electrical_value": null, "square_feet": null, "stories": null, "units_or_beds": null, "description": null, "confidence": 0, "source": null},
-  "scope_items": ["site_lighting", "lighting"],
+  "kind": "addendum",
+  "kind_confidence": 0.96,
+  "project_name": {
+    "value": "Benedum Hall Lab Renovation",
+    "confidence": 0.95,
+    "source": "RE: Benedum Hall Lab Renovation - Electrical ITB - Addendum 2 and bid date extension",
+    "source_location": "subject"
+  },
+  "project_number": {
+    "value": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "gc_name": {
+    "value": "PJ Dick",
+    "confidence": 0.95,
+    "source": "jdoe@pjdick.com",
+    "source_location": null
+  },
+  "gc_contacts": [
+    {
+      "name": "Jane Doe",
+      "email": "jdoe@pjdick.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "architect_engineer": {
+    "value": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "location": {
+    "raw": null,
+    "street": null,
+    "city": null,
+    "state": null,
+    "postal_code": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "project_type": "higher_education",
+  "project_type_confidence": 0.8,
+  "project_subtype": null,
+  "new_or_renovation": "renovation",
+  "bid_type": "unknown",
+  "sector": "unknown",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-21T14:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.98,
+    "source": "the bid due date has been extended to Wednesday, October 21 at 2:00 PM",
+    "source_location": "body"
+  },
+  "prebid": {
+    "value": null,
+    "timezone": null,
+    "location": null,
+    "mandatory": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "rfi_deadline": {
+    "value": null,
+    "timezone": null,
+    "time_known": false,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "intent_due": {
+    "value": null,
+    "timezone": null,
+    "time_known": false,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "anticipated_start": null,
+  "duration_months": null,
+  "size_signals": {
+    "stated_project_value": null,
+    "stated_electrical_value": null,
+    "square_feet": null,
+    "stories": null,
+    "units_or_beds": null,
+    "description": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "scope_items": [
+    "site_lighting",
+    "lighting"
+  ],
   "scope_text": "Addendum 2 adds site lighting at the O'Hara Street entry and revises the lighting fixture schedule.",
   "exclusions_text": null,
   "flags": [],
   "document_links": [],
-  "addendum_label": "Addendum 2", "addendum_number": 2,
+  "addendum_label": "Addendum 2",
+  "addendum_number": 2,
   "changes_described": "Adds site lighting at the O'Hara Street entry, revises the lighting fixture schedule, and extends the bid due date to Wednesday, October 21 at 2:00 PM.",
   "trade_relevance": "primary",
   "summary": "Addendum 2 adds site lighting at the O'Hara Street entry, revises the fixture schedule, and extends the bid due date."

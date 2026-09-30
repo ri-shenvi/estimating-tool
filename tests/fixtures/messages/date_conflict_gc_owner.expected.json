@@ -1,0 +1,69 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.96,
+  "project_name": {
+    "value": "Sewickley Academy Science Wing",
+    "confidence": 0.94,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Massaro Corporation",
+    "confidence": 0.97,
+    "source": "Massaro invites Ferry Electric to bid the electrical package",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Robin Massaro",
+      "email": "rmassaro@massarocorp.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Sewickley Academy",
+    "confidence": 0.9,
+    "source": "Sewickley Academy science wing",
+    "source_location": "body"
+  },
+  "location": {
+    "raw": "315 Academy Avenue, Sewickley, PA 15143",
+    "street": "315 Academy Avenue",
+    "city": "Sewickley",
+    "state": "PA",
+    "postal_code": "15143",
+    "confidence": 0.95,
+    "source": "315 Academy Avenue, Sewickley, PA 15143",
+    "source_location": "body"
+  },
+  "project_type": "k12_education",
+  "project_type_confidence": 0.93,
+  "new_or_renovation": "addition",
+  "bid_type": "hard_bid",
+  "sector": "institutional_private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "10-14T10:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.9,
+    "source": "Please have your proposal to Massaro by Oct 14 at 10 AM ... The owner's sealed bid opening is Oct 16 at 2 PM.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "fire_alarm",
+    "structured_cabling"
+  ],
+  "scope_text": "Scope: distribution, branch power, lighting and controls, lab equipment connections, fire alarm and structured cabling.",
+  "flags": [
+    "conflicting_dates",
+    "sealed_bid"
+  ],
+  "trade_relevance": "primary",
+  "summary": "Science wing addition at Sewickley Academy with Massaro. Distribution, branch power, lighting and controls, lab equipment connections, fire alarm and cabling. Massaro wants pricing two days before the owner's sealed opening."
+}

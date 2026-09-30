@@ -7,7 +7,7 @@ import time
 import traceback
 
 from bidtriage.core.db import session_scope
-from bidtriage.core.jobs import claim, complete, fail
+from bidtriage.core.jobs import JobFailedError, claim, complete, fail
 from bidtriage.worker.handlers import HANDLERS, Context, schedule_tick
 
 log = logging.getLogger("bidtriage.worker")
@@ -19,12 +19,17 @@ def run_once(ctx: Context) -> bool:
         if job is None:
             return False
         handler = HANDLERS.get(job.kind)
+        ctx.job = job
         try:
             if handler is None:
                 raise RuntimeError(f"no handler for {job.kind}")
             handler(session, job.payload, ctx)
             complete(session, job)
             log.info("job done kind=%s key=%s", job.kind, job.key)
+        except JobFailedError as e:
+            # The handler recorded why; keep that write and let the queue back off.
+            fail(session, job, str(e))
+            log.warning("job failed kind=%s key=%s: %s", job.kind, job.key, e)
         except Exception as e:  # noqa: BLE001
             session.rollback()
             with session_scope() as s2:
@@ -32,6 +37,8 @@ def run_once(ctx: Context) -> bool:
                 if j2 is not None:
                     fail(s2, j2, f"{e}\n{traceback.format_exc()}")
             log.exception("job failed kind=%s key=%s", job.kind, job.key)
+        finally:
+            ctx.job = None
         return True
 
 

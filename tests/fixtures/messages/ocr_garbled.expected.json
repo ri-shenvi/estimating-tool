@@ -1,0 +1,56 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.55,
+  "project_name": {
+    "value": "Riverside Industrial Park Building 2",
+    "confidence": 0.5,
+    "source": "R1VERS1DE 1NDUSTR1AL PARK BUlLDlNG 2",
+    "source_location": "body"
+  },
+  "gc_name": {
+    "value": "Burchick Construction",
+    "confidence": 0.6,
+    "source": "Burch1ck C0nstructi0n",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Lee Burchick",
+      "email": "lee@burchick.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "location": {
+    "raw": "100 Riverside Drive, Leetsdale, PA 15056",
+    "street": "100 Riverside Drive",
+    "city": "Leetsdale",
+    "state": "PA",
+    "postal_code": "15056",
+    "confidence": 0.45,
+    "source": "L0cati0n: 1 00 R1verside Dr1ve, Le3tsda1e, PA 15O56",
+    "source_location": "body"
+  },
+  "project_type": "light_industrial_utility",
+  "project_type_confidence": 0.6,
+  "bid_type": "hard_bid",
+  "sector": "private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-22T14:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.6,
+    "source": "B1ds due: 0ct0ber 22, 2O26 at 2:OO PM",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "fire_alarm"
+  ],
+  "scope_text": "Sc0pe: serv1ce and d1str1but10n, branch p0wer, h1gh-bay 11ght1ng, f1re a1arm.",
+  "trade_relevance": "primary",
+  "summary": "Badly OCR'd fax of an electrical ITB for an industrial park building near Leetsdale: service and distribution, branch power, high-bay lighting and fire alarm. Most fields are low confidence and should be checked against the original."
+}
