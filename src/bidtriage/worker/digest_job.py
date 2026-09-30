@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -27,6 +27,7 @@ from bidtriage.decisions.tokens import sign_action
 from bidtriage.digest.render import render_html, render_text, subject_line
 from bidtriage.digest.sender import send_email
 from bidtriage.digest.snapshot import DigestItem, HealthLine, ReviewItem, assemble
+from bidtriage.ingestion.health import OK, source_health
 from bidtriage.scoring.engine import ScoreResult
 
 
@@ -166,33 +167,13 @@ def _distance_from(res: ScoreResult | None) -> float | None:
 
 
 def health_lines(session: Session, now: datetime) -> list[HealthLine]:
+    """System health section of the digest, using the SPEC-01 F8 thresholds."""
     out = []
     for s in session.scalars(select(Source)).all():
-        if s.paused:
-            out.append(HealthLine(name=s.name, status="paused"))
-            continue
-        last = aware(s.last_success_at)
-        age = (now - last) if last else None
-        if age is None:
-            out.append(HealthLine(name=s.name, status="down", detail="never polled successfully"))
-        elif age > timedelta(minutes=60):
-            out.append(
-                HealthLine(
-                    name=s.name,
-                    status="down",
-                    detail=f"last success {int(age.total_seconds() // 60)} min ago",
-                )
-            )
-        elif age > timedelta(minutes=30):
-            out.append(
-                HealthLine(
-                    name=s.name,
-                    status="degraded",
-                    detail=f"last success {int(age.total_seconds() // 60)} min ago",
-                )
-            )
-        else:
-            out.append(HealthLine(name=s.name, status="ok"))
+        h = source_health(last_success_at=aware(s.last_success_at), now=now, paused=s.paused)
+        out.append(
+            HealthLine(name=s.name, status=h.status, detail="" if h.status == OK else h.detail)
+        )
     return out
 
 

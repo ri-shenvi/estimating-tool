@@ -17,6 +17,9 @@ class Settings(BaseSettings):
         alias="DATABASE_URL",
     )
     blob_dir: str = Field(default="./var/blobs", alias="BLOB_DIR")
+    blob_bucket: str | None = Field(default=None, alias="BLOB_BUCKET")
+    blob_endpoint_url: str | None = Field(default=None, alias="BLOB_ENDPOINT_URL")
+    blob_prefix: str = Field(default="", alias="BLOB_PREFIX")
     secret_key: str = Field(
         default="dev-secret-key-dev-secret-key-dev-secret-key", alias="SECRET_KEY"
     )
@@ -39,6 +42,13 @@ class Settings(BaseSettings):
     home_lon: float = Field(default=-79.9482, alias="HOME_LON")
 
     action_token_ttl_days: int = Field(default=7, alias="ACTION_TOKEN_TTL_DAYS")
+
+    # SPEC-01: ingestion
+    ingest_backfill_days: int = Field(default=90, alias="INGEST_BACKFILL_DAYS")
+    ingest_backfill_batch: int = Field(default=50, alias="INGEST_BACKFILL_BATCH")
+    ingest_live_batch: int = Field(default=200, alias="INGEST_LIVE_BATCH")
+    ingest_ocr: bool = Field(default=False, alias="INGEST_OCR")
+    admin_alert_to: str | None = Field(default=None, alias="ADMIN_ALERT_TO")
 
     @property
     def is_dev(self) -> bool:

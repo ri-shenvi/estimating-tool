@@ -55,19 +55,26 @@ class User(Base):
 class Source(Base):
     __tablename__ = "sources"
     id: Mapped[str] = _pk()
-    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # graph | imap | file
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # graph | imap | file | manual
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    mailbox: Mapped[str] = mapped_column(String(320), nullable=False, default="")
     config_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delta_state: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # SPEC-01 F7: first-connection backfill, oldest-first, rate-limited behind live polls.
+    backfill_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
+    backfill_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # SPEC-01 F8: the alert for a `down` source fires once per outage, not once per poll.
+    down_alert_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class SourcePoll(Base):
     __tablename__ = "source_polls"
     id: Mapped[str] = _pk()
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), nullable=False, index=True)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False, default="live")  # live | backfill
     started_at: Mapped[datetime] = _ts()
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     seen: Mapped[int] = mapped_column(Integer, default=0)
@@ -87,6 +94,7 @@ class RawMessage(Base):
     cc: Mapped[list[Any]] = mapped_column(JSONType, nullable=False, default=list)
     subject: Mapped[str] = mapped_column(Text, nullable=False, default="")
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sent_at_confidence: Mapped[str] = mapped_column(String(10), nullable=False, default="high")
     received_at: Mapped[datetime] = _ts()
     body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     body_html: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -95,7 +103,9 @@ class RawMessage(Base):
     in_reply_to: Mapped[str | None] = mapped_column(String(998))
     references: Mapped[list[Any]] = mapped_column(JSONType, nullable=False, default=list)
     forwarded_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    forwarded_by_addr: Mapped[str | None] = mapped_column(String(320))
     forward_note: Mapped[str | None] = mapped_column(Text)
+    forward_chain: Mapped[list[Any]] = mapped_column(JSONType, nullable=False, default=list)
     copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     kind: Mapped[str | None] = mapped_column(String(30), index=True)
     kind_confidence: Mapped[float | None] = mapped_column(Float)
@@ -121,6 +131,8 @@ class RawAttachment(Base):
     message_id: Mapped[str] = mapped_column(
         ForeignKey("raw_messages.id"), nullable=False, index=True
     )
+    # Set for members extracted out of a container (ZIP); the container keeps its own row.
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("raw_attachments.id"), index=True)
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     mime: Mapped[str] = mapped_column(
         String(128), nullable=False, default="application/octet-stream"
@@ -129,8 +141,10 @@ class RawAttachment(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     blob_key: Mapped[str | None] = mapped_column(String(256))
     text: Mapped[str | None] = mapped_column(Text)
+    pages: Mapped[int | None] = mapped_column(Integer)
     ocr: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     large_document: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    oversize: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     extraction_error: Mapped[str | None] = mapped_column(String(64))
 
     message: Mapped[RawMessage] = relationship(back_populates="attachments")

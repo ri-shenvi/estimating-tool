@@ -87,16 +87,20 @@ duplicate work.
 ## 4. Data model (core tables)
 
 ```sql
-sources(id, kind graph|imap|file, config_json_enc, status, last_success_at, delta_state_json)
-source_polls(id, source_id, started_at, finished_at, seen, new, dupes, errors_json)
+sources(id, kind graph|imap|file|manual, name, mailbox, config_json_enc, status,
+        last_success_at, delta_state_json, paused, backfill_days, backfill_done,
+        down_alert_sent_at)                       -- backfill + once-per-outage alert, SPEC-01 F7/F8
+source_polls(id, source_id, mode live|backfill, started_at, finished_at, seen, new, dupes,
+             errors_json)
 
 raw_messages(id, internet_message_id, content_hash, from_addr, from_name, to_json, cc_json,
-             subject, sent_at, received_at, body_text, body_html, body_trimmed, headers_json,
-             forwarded_by_user_id, forward_note, copies, kind, kind_confidence,
+             subject, sent_at, sent_at_confidence, received_at, body_text, body_html,
+             body_trimmed, headers_json, in_reply_to, references_json, forwarded_by_user_id,
+             forwarded_by_addr, forward_note, forward_chain_json, copies, kind, kind_confidence,
              extraction_status, created_at)
 message_sources(message_id, source_id, provider_message_id, recipient_path)   -- fan-out
-raw_attachments(id, message_id, filename, mime, size, sha256, blob_key, text, ocr,
-                large_document, extraction_error)
+raw_attachments(id, message_id, parent_id, filename, mime, size, sha256, blob_key, text, pages,
+                ocr, large_document, oversize, extraction_error)  -- parent_id: member of a ZIP
 message_links(id, message_id, url, host_class, wrapped, label)
 
 extractions(id, message_id, version, model, prompt_version, payload_jsonb, tokens_in, tokens_out,
@@ -204,7 +208,7 @@ Import-linter contracts enforce that `scoring` and `resolution` import nothing f
 | Digest render exception | job failure | retries; fallback digest at +60; alert |
 | SMTP failure | send error | 3 retries per recipient; alert; digest stored and viewable |
 | DB down | readyz | host restarts; nothing lost (jobs are in DB) |
-| Blob store down | attachment write error | message stored with `attachment_pending`; retry job |
+| Blob store down | attachment write error | the message is not committed and its provider id is never linked, so the next poll re-fetches it; the error shows on the `source_polls` row |
 | Geocoder down | timeouts | distance factor uses `unknown`; retry nightly |
 
 ## 9. Security

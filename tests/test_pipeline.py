@@ -74,14 +74,32 @@ def test_cross_channel_dedupe_and_date_change(session, fixtures_dir):  # type: i
 
 
 def test_duplicate_copy_linked_not_recreated(session, fixtures_dir):  # type: ignore[no-untyped-def]
+    """`copies` counts recipient paths, not re-reads of the same mailbox (SPEC-01 F3)."""
     clock = FrozenClock(datetime(2026, 9, 30, 6, 30, tzinfo=BUSINESS_TZ))
     _run(session, fixtures_dir, clock, "bc_invite_benedum.eml")
+    parsed = parse_eml((fixtures_dir / "bc_invite_benedum.eml").read_bytes())
     src = session.scalar(select(Source))
+
+    # Same mailbox, new provider id (an IMAP UIDVALIDITY reset): relinked, still one copy.
     msg, is_new = pipeline.ingest_parsed(
         session,
         source_id=src.id,
         provider_message_id="another-provider-id",
-        parsed=parse_eml((fixtures_dir / "bc_invite_benedum.eml").read_bytes()),
+        parsed=parsed,
+        clock=clock,
+    )
+    assert not is_new and msg.copies == 1 and session.query(RawMessage).count() == 1
+
+    # A second connected mailbox that was CC'd is a second recipient path.
+    other = Source(kind="imap", name="dana inbox", mailbox="dana@ferryelectric.com")
+    session.add(other)
+    session.flush()
+    msg, is_new = pipeline.ingest_parsed(
+        session,
+        source_id=other.id,
+        provider_message_id="INBOX:100:9",
+        parsed=parsed,
+        recipient_path=other.mailbox,
         clock=clock,
     )
     assert not is_new and msg.copies == 2 and session.query(RawMessage).count() == 1

@@ -10,10 +10,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from bidtriage.core.blobs import BlobStore
 from bidtriage.core.clock import Clock, SystemClock, aware
+from bidtriage.core.crypto import sha256_hex
 from bidtriage.core.jobs import enqueue
 from bidtriage.core.models import (
     GC,
@@ -29,13 +31,22 @@ from bidtriage.core.models import (
     RawMessage,
     Score,
     ScoringProfile,
+    User,
 )
 from bidtriage.extraction.postprocess import PLATFORM_DOMAINS
 from bidtriage.extraction.prefilter import obviously_not_bid
 from bidtriage.extraction.protocol import AttachmentText, ExtractionInput, Extractor
 from bidtriage.extraction.schema import EXTRACTABLE_KINDS, ExtractedOpportunity, Kind
 from bidtriage.gcs.resolve import GCRecord, resolve_gc
-from bidtriage.ingestion.attachments import extract_text, sanitize_filename
+from bidtriage.ingestion.attachments import (
+    OVERSIZE_BYTES,
+    Member,
+    OcrBackend,
+    extract_text,
+    extract_zip,
+    sanitize_filename,
+    sniff_mime,
+)
 from bidtriage.ingestion.eml import ParsedMessage
 from bidtriage.ingestion.links import harvest_links
 from bidtriage.resolution.evidence import Candidate, Incoming, decide, evidence
@@ -47,6 +58,24 @@ from bidtriage.scoring.snapshot import CalendarSnapshot, GCSnapshot, Opportunity
 
 # ---------------------------------------------------------------- ingestion
 
+DEDUPE_WINDOW_DAYS = 7
+
+
+def find_duplicate(session: Session, parsed: ParsedMessage, *, now: datetime) -> RawMessage | None:
+    """The two content-based duplicate rules of SPEC-01 F3 (the provider-id rule is per-source)."""
+    if parsed.internet_message_id:
+        dupe = session.scalar(
+            select(RawMessage).where(RawMessage.internet_message_id == parsed.internet_message_id)
+        )
+        if dupe is not None:
+            return dupe
+    window = now - timedelta(days=DEDUPE_WINDOW_DAYS)
+    return session.scalar(
+        select(RawMessage).where(
+            RawMessage.content_hash == parsed.content_hash, RawMessage.received_at >= window
+        )
+    )
+
 
 def ingest_parsed(
     session: Session,
@@ -56,9 +85,10 @@ def ingest_parsed(
     parsed: ParsedMessage,
     recipient_path: str = "",
     clock: Clock | None = None,
-    ocr: bool = False,
+    ocr: bool | OcrBackend | None = False,
+    blobs: BlobStore | None = None,
 ) -> tuple[RawMessage, bool]:
-    """Store a parsed message idempotently (SPEC-01 F3). Returns (message, is_new)."""
+    """Store a parsed message idempotently (SPEC-01 F2/F3/F5/F6). Returns (message, is_new)."""
     clock = clock or SystemClock()
     now = clock.now()
     existing_link = session.scalar(
@@ -72,20 +102,18 @@ def ingest_parsed(
         assert msg is not None
         return msg, False
 
-    dupe: RawMessage | None = None
-    if parsed.internet_message_id:
-        dupe = session.scalar(
-            select(RawMessage).where(RawMessage.internet_message_id == parsed.internet_message_id)
-        )
-    if dupe is None:
-        window = now - timedelta(days=7)
-        dupe = session.scalar(
-            select(RawMessage).where(
-                RawMessage.content_hash == parsed.content_hash, RawMessage.received_at >= window
+    dupe = find_duplicate(session, parsed, now=now)
+    if dupe is not None:
+        # Linked, not re-created: one opportunity even when the GC CC'd four people (SPEC-01 F3).
+        # `copies` counts recipient paths, so a folder re-scan that hands the same mailbox a new
+        # provider id (an IMAP UIDVALIDITY reset) records the id without inflating the count.
+        already_from_this_source = session.scalar(
+            select(MessageSource).where(
+                MessageSource.message_id == dupe.id, MessageSource.source_id == source_id
             )
         )
-    if dupe is not None:
-        dupe.copies += 1
+        if already_from_this_source is None:
+            dupe.copies += 1
         session.add(
             MessageSource(
                 message_id=dupe.id,
@@ -97,6 +125,7 @@ def ingest_parsed(
         session.flush()
         return dupe, False
 
+    forwarder = _forwarding_user(session, parsed.forwarded_by)
     msg = RawMessage(
         internet_message_id=parsed.internet_message_id,
         content_hash=parsed.content_hash,
@@ -106,14 +135,18 @@ def ingest_parsed(
         cc=parsed.cc,
         subject=parsed.subject,
         sent_at=parsed.sent_at,
-        received_at=now,
+        sent_at_confidence=parsed.sent_at_confidence,
+        received_at=parsed.received_at or now,
         body_text=parsed.body_text,
         body_html=parsed.body_html,
         body_trimmed=parsed.body_trimmed,
         headers=parsed.headers,
         in_reply_to=parsed.in_reply_to,
         references=parsed.references,
+        forwarded_by_user_id=forwarder.id if forwarder else None,
+        forwarded_by_addr=parsed.forwarded_by,
         forward_note=parsed.forward_note,
+        forward_chain=parsed.forward_chain,
         created_at=now,
     )
     session.add(msg)
@@ -126,23 +159,10 @@ def ingest_parsed(
             recipient_path=recipient_path,
         )
     )
-    for a in parsed.attachments:
-        ext = extract_text(a.filename, a.mime, a.data, ocr=ocr)
-        session.add(
-            RawAttachment(
-                message_id=msg.id,
-                filename=sanitize_filename(a.filename),
-                mime=a.mime,
-                size=a.size,
-                sha256=a.sha256,
-                text=ext.text,
-                ocr=ext.ocr,
-                large_document=ext.large_document,
-                extraction_error=ext.error,
-            )
-        )
-    texts = [parsed.body_text, parsed.body_html]
-    for link in harvest_links(*texts):
+    attachment_texts = _store_attachments(session, msg, parsed, ocr=ocr, blobs=blobs)
+    # SPEC-01 F6: URLs come from the body *and* the attachments (the ITB letter holds the plan-room
+    # link as often as the email does).
+    for link in harvest_links(parsed.body_text, parsed.body_html, *attachment_texts):
         session.add(
             MessageLink(
                 message_id=msg.id,
@@ -154,6 +174,86 @@ def ingest_parsed(
     session.flush()
     enqueue(session, "extract_message", f"extract:{msg.id}:v1", {"message_id": msg.id}, clock=clock)
     return msg, True
+
+
+def _forwarding_user(session: Session, address: str | None) -> User | None:
+    """The forwarder becomes the default assignee suggestion downstream (SPEC-01 F4)."""
+    if not address:
+        return None
+    return session.scalar(select(User).where(func.lower(User.email) == address.lower()))
+
+
+def _store_attachments(
+    session: Session,
+    msg: RawMessage,
+    parsed: ParsedMessage,
+    *,
+    ocr: bool | OcrBackend | None,
+    blobs: BlobStore | None,
+) -> list[str]:
+    """Persist attachments and any container members (SPEC-01 F5). Returns their extracted texts."""
+    texts: list[str] = []
+    for a in parsed.attachments:
+        row = _store_attachment(
+            session, msg, a.filename, a.mime, a.data, parent_id=None, ocr=ocr, blobs=blobs
+        )
+        if row.text:
+            texts.append(row.text)
+        for member in _members(a.filename, a.mime, a.data):
+            child = _store_attachment(
+                session,
+                msg,
+                member.filename,
+                "application/octet-stream",
+                member.data,
+                parent_id=row.id,
+                ocr=ocr,
+                blobs=blobs,
+            )
+            if child.text:
+                texts.append(child.text)
+    return texts
+
+
+def _members(filename: str, mime: str, data: bytes) -> list[Member]:
+    if len(data) > OVERSIZE_BYTES or sniff_mime(data, mime) != "application/zip":
+        return []
+    return extract_zip(data).members
+
+
+def _store_attachment(
+    session: Session,
+    msg: RawMessage,
+    filename: str,
+    mime: str,
+    data: bytes,
+    *,
+    parent_id: str | None,
+    ocr: bool | OcrBackend | None,
+    blobs: BlobStore | None,
+) -> RawAttachment:
+    ext = extract_text(filename, mime, data, ocr=ocr)
+    sha = sha256_hex(data)
+    # SPEC-01: oversize attachments keep their metadata but their bytes are not stored.
+    blob_key = None if ext.oversize or blobs is None else blobs.put(sha, data)
+    row = RawAttachment(
+        message_id=msg.id,
+        parent_id=parent_id,
+        filename=sanitize_filename(filename),
+        mime=ext.mime,
+        size=len(data),
+        sha256=sha,
+        blob_key=blob_key,
+        text=ext.text,
+        pages=ext.pages,
+        ocr=ext.ocr,
+        large_document=ext.large_document,
+        oversize=ext.oversize,
+        extraction_error=ext.error,
+    )
+    session.add(row)
+    session.flush()
+    return row
 
 
 # ---------------------------------------------------------------- extraction

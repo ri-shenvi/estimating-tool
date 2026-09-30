@@ -64,7 +64,11 @@ uv run bidtriage worker         # terminal 2 (add --fake-fixtures tests/fixtures
 | Command | Purpose |
 |---|---|
 | `make check` | ruff + mypy + import-linter + pytest |
-| `bidtriage ingest-dir DIR [--fake]` | Run .eml files through the whole pipeline synchronously |
+| `bidtriage ingest-dir DIR [--fake]` | Run .eml/.msg files through the whole pipeline synchronously |
+| `bidtriage add-source KIND --name ... --config-json ...` | Register a Graph/IMAP/file mail source; credentials are encrypted with `SECRET_KEY` |
+| `bidtriage poll-sources` | Poll every active source once; prints seen/new/duplicates per source |
+| `bidtriage source-health` | `ok` / `degraded` / `down` per source (SPEC-01 F8 thresholds) |
+| `bidtriage ingest-metrics` | Poll success rate, ingestion lag p50/p95, attachment and duplicate counts |
 | `bidtriage digest-preview` | Build the digest without sending |
 | `bidtriage eval-extraction tests/fixtures/messages [--offline]` | Per-field extraction accuracy against `.expected.json` |
 | `bidtriage calibrate labeled.csv` | Precision/recall of the Bid band against the chief estimator's labels |
@@ -73,8 +77,8 @@ uv run bidtriage worker         # terminal 2 (add --fake-fixtures tests/fixtures
 
 ```
 src/bidtriage/
-  core/        settings, ORM models, Postgres job queue, clock, crypto
-  ingestion/   .eml parsing, forward unwrapping, attachments, links; Graph / IMAP / file sources
+  core/        settings, ORM models, Postgres job queue, clock, crypto, SHA-256 blob store
+  ingestion/   .eml/.msg parsing, forward unwrapping, attachment text, links, source health; Graph / IMAP / file sources
   extraction/  schema, prompt loader, Claude extractor, fixture extractor, deterministic post-processing
   resolution/  name normalization, evidence scoring, date-merge rules
   scoring/     profile schema + defaults, pure scoring engine with explanations

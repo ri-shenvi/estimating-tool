@@ -9,19 +9,26 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from bidtriage.core.blobs import BlobStore
 from bidtriage.core.config import get_settings
 from bidtriage.core.jobs import enqueue
-from bidtriage.core.models import Extraction, Opportunity, RawMessage, Source, SourcePoll, User
+from bidtriage.core.models import Extraction, Opportunity, RawMessage, Source, User
 from bidtriage.extraction.protocol import Extractor
-from bidtriage.worker import pipeline
+from bidtriage.worker import ingest_job, pipeline
 
 Handler = Callable[[Session, dict[str, Any], "Context"], None]
 
 
 class Context:
-    def __init__(self, extractor: Extractor | None, sources: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        extractor: Extractor | None,
+        sources: dict[str, Any] | None = None,
+        blobs: BlobStore | None = None,
+    ) -> None:
         self._extractor = extractor
         self.sources = sources or {}
+        self.blobs = blobs
         self.settings = get_settings()
 
     @property
@@ -34,34 +41,51 @@ class Context:
     def home(self) -> tuple[float, float]:
         return (self.settings.home_lat, self.settings.home_lon)
 
+    def source_impl(self, src: Source) -> Any:
+        """Registered implementation if a test injected one, else built from the row's config."""
+        impl = self.sources.get(src.id)
+        if impl is None:
+            from bidtriage.worker.sources import build_source
+
+            impl = build_source(src, self.settings.secret_key)
+            self.sources[src.id] = impl
+        return impl
+
+
+def _source_impl(session: Session, payload: dict[str, Any], ctx: Context) -> tuple[Source, Any]:
+    src = session.get(Source, payload["source_id"])
+    if src is None:
+        raise LookupError(f"no such source {payload['source_id']}")
+    return src, ctx.source_impl(src)
+
 
 def poll_source(session: Session, payload: dict[str, Any], ctx: Context) -> None:
     src = session.get(Source, payload["source_id"])
     if src is None or src.paused:
         return
-    impl = ctx.sources.get(src.id)
-    if impl is None:
-        raise RuntimeError(f"no source implementation registered for {src.id}")
-    poll = SourcePoll(source_id=src.id, started_at=datetime.now(tz=UTC))
-    session.add(poll)
-    res = impl.poll(src.delta_state)
-    new = dupes = 0
-    for provider_id, parsed in res.messages:
-        _, is_new = pipeline.ingest_parsed(
-            session, source_id=src.id, provider_message_id=provider_id, parsed=parsed
+    src, impl = _source_impl(session, payload, ctx)
+    ingest_job.run_poll(session, src, impl, ctx)
+    if not src.backfill_done:
+        # First connection: start the history walk behind live mail (SPEC-01 F7).
+        enqueue(
+            session,
+            "backfill_source",
+            f"backfill:{src.id}:0",
+            {"source_id": src.id},
+            priority=ingest_job.BACKFILL_PRIORITY,
         )
-        new += int(is_new)
-        dupes += int(not is_new)
-    src.delta_state = res.new_state
-    if not res.errors:
-        src.last_success_at = datetime.now(tz=UTC)
-    poll.finished_at, poll.seen, poll.new, poll.duplicates, poll.errors = (
-        datetime.now(tz=UTC),
-        len(res.messages),
-        new,
-        dupes,
-        res.errors,
-    )
+
+
+def backfill_source(session: Session, payload: dict[str, Any], ctx: Context) -> None:
+    src = session.get(Source, payload["source_id"])
+    if src is None or src.paused or src.backfill_done:
+        return
+    src, impl = _source_impl(session, payload, ctx)
+    ingest_job.run_backfill(session, src, impl, ctx)
+
+
+def check_sources(session: Session, payload: dict[str, Any], ctx: Context) -> None:
+    ingest_job.check_sources(session, ctx)
 
 
 def extract_message(session: Session, payload: dict[str, Any], ctx: Context) -> None:
@@ -150,6 +174,7 @@ def schedule_tick(session: Session, ctx: Context, now: datetime | None = None) -
     for src in session.scalars(select(Source).where(Source.paused.is_(False))).all():
         enqueue(session, "poll_source", f"poll:{src.id}:{five}", {"source_id": src.id}, priority=50)
     enqueue(session, "unsnooze", f"unsnooze:{five}", {}, priority=90)
+    enqueue(session, "check_sources", f"check_sources:{five}", {}, priority=40)
     from zoneinfo import ZoneInfo
 
     local = now.astimezone(ZoneInfo(ctx.settings.digest_timezone))
@@ -176,6 +201,8 @@ def schedule_tick(session: Session, ctx: Context, now: datetime | None = None) -
 
 HANDLERS: dict[str, Handler] = {
     "poll_source": poll_source,
+    "backfill_source": backfill_source,
+    "check_sources": check_sources,
     "extract_message": extract_message,
     "resolve_message": resolve_message,
     "score_opportunity": score_opportunity,

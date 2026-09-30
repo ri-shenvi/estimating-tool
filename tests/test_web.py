@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func
 
 from bidtriage.core.config import Settings, get_settings
 from bidtriage.core.models import Opportunity, User
@@ -100,3 +101,92 @@ def test_role_guard(client, session):  # type: ignore[no-untyped-def]
     session.flush()
     r = client.post("/admin/profiles/1/activate", headers={"X-Dev-User": "sam@example.com"})
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------- SPEC-01: admin sources and upload
+
+
+def test_admin_page_shows_source_health(client, session, monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
+    from datetime import timedelta
+
+    from bidtriage.core.models import Source
+
+    _seed(session)
+    session.add(
+        Source(
+            id="s1",
+            kind="graph",
+            name="Estimating mailbox",
+            mailbox="estimating@ferryelectric.com",
+            last_success_at=datetime.now(tz=UTC) - timedelta(minutes=90),
+        )
+    )
+    session.flush()
+    r = client.get("/admin/", headers={"X-Dev-User": "casey@example.com"})
+    assert r.status_code == 200
+    assert "Estimating mailbox" in r.text and "down" in r.text
+    assert "Manual upload" in r.text
+
+
+def test_admin_upload_eml_ingests_it(client, session, monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
+    from sqlalchemy import select
+
+    from bidtriage.core.blobs import LocalBlobStore
+    from bidtriage.core.models import RawMessage, Source
+
+    _seed(session)
+    monkeypatch.setattr(
+        "bidtriage.web.routers.admin.get_blob_store", lambda: LocalBlobStore(tmp_path / "blobs")
+    )
+    raw = (
+        b"Message-ID: <upload-1@gc.com>\r\nFrom: Bob <bbuilder@mascaroconstruction.com>\r\n"
+        b"To: dana@ferryelectric.com\r\nSubject: ITB - Wexford MOB\r\n"
+        b"Date: Tue, 29 Sep 2026 16:45:00 -0400\r\n\r\nBids due 10/20 at 2 PM.\r\n"
+    )
+    r = client.post(
+        "/admin/upload",
+        files={"file": ("itb.eml", raw, "message/rfc822")},
+        headers={"X-Dev-User": "casey@example.com"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and "uploaded=new" in r.headers["location"]
+    msg = session.scalars(select(RawMessage)).one()
+    assert msg.internet_message_id == "<upload-1@gc.com>"
+    assert msg.from_addr == "bbuilder@mascaroconstruction.com"
+    src = session.scalars(select(Source).where(Source.kind == "manual")).one()
+    assert src.paused and src.backfill_done  # nothing to poll, nothing to backfill
+
+    again = client.post(
+        "/admin/upload",
+        files={"file": ("itb.eml", raw, "message/rfc822")},
+        headers={"X-Dev-User": "casey@example.com"},
+        follow_redirects=False,
+    )
+    assert "uploaded=duplicate" in again.headers["location"]
+    assert session.scalar(select(func.count()).select_from(RawMessage)) == 1
+
+
+def test_admin_upload_rejects_other_file_types(client, session):  # type: ignore[no-untyped-def]
+    _seed(session)
+    r = client.post(
+        "/admin/upload",
+        files={"file": ("drawings.pdf", b"%PDF-1.4", "application/pdf")},
+        headers={"X-Dev-User": "casey@example.com"},
+    )
+    assert r.status_code == 400
+
+
+def test_admin_can_pause_and_resume_a_source(client, session):  # type: ignore[no-untyped-def]
+    from bidtriage.core.models import Source
+
+    _seed(session)
+    src = Source(id="s2", kind="imap", name="Dana inbox", mailbox="dana@ferryelectric.com")
+    session.add(src)
+    session.flush()
+    for expected in (True, False):
+        r = client.post(
+            "/admin/sources/s2/pause",
+            headers={"X-Dev-User": "casey@example.com"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303 and src.paused is expected

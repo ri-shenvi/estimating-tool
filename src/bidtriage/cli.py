@@ -75,6 +75,109 @@ def add_user(email: str, name: str, role: str = "estimator") -> None:
     typer.echo(f"added {email} ({role})")
 
 
+@app.command("add-source")
+def add_source(
+    kind: str = typer.Argument(..., help="graph | imap | file | manual"),
+    name: str = typer.Option(..., help="Display name, e.g. 'Estimating mailbox'"),
+    mailbox: str = typer.Option("", help="Mailbox address; recorded as the recipient path"),
+    config_json: str = typer.Option(
+        "{}",
+        help='Credentials, e.g. \'{"tenant_id":"...","client_id":"...","client_secret":"..."}\'',
+    ),
+    backfill_days: int = typer.Option(90, help="History window walked on first connection"),
+) -> None:
+    """Register a mail source (SPEC-01 F1). Credentials are encrypted with SECRET_KEY."""
+    from bidtriage.core.config import get_settings
+    from bidtriage.core.db import session_scope
+    from bidtriage.core.models import Source
+    from bidtriage.worker.sources import KINDS, encode_config
+
+    if kind not in KINDS:
+        typer.echo(f"kind must be one of {', '.join(KINDS)}")
+        raise typer.Exit(1)
+    try:
+        config = json.loads(config_json)
+    except json.JSONDecodeError as e:
+        typer.echo(f"--config-json is not valid JSON: {e}")
+        raise typer.Exit(1) from e
+    settings = get_settings()
+    with session_scope() as s:
+        src = Source(
+            kind=kind,
+            name=name,
+            mailbox=mailbox,
+            config_enc=encode_config(config, settings.secret_key) if config else "",
+            backfill_days=backfill_days,
+            paused=kind == "manual",
+        )
+        s.add(src)
+        s.flush()
+        typer.echo(f"added source {src.id} ({kind}) {name}")
+
+
+@app.command("poll-sources")
+def poll_sources(
+    fake_fixtures: Path | None = typer.Option(None, help="Fixture-backed extractor"),
+) -> None:
+    """Poll every active source once and report what each poll saw (SPEC-01 F7)."""
+    from sqlalchemy import select
+
+    from bidtriage.core.db import session_scope
+    from bidtriage.core.models import Source
+    from bidtriage.worker import ingest_job
+    from bidtriage.worker.handlers import Context
+
+    ctx = Context(_extractor(fake_fixtures) if fake_fixtures else None)
+    with session_scope() as s:
+        sources = s.scalars(select(Source).where(Source.paused.is_(False))).all()
+        if not sources:
+            typer.echo("no active sources; add one with `bidtriage add-source`")
+            raise typer.Exit(1)
+        for src in sources:
+            impl = ctx.source_impl(src)
+            summary = ingest_job.run_poll(s, src, impl, ctx)
+            typer.echo(
+                f"{src.name}: seen={summary.seen} new={summary.new} "
+                f"duplicates={summary.duplicates} errors={len(summary.errors)}"
+            )
+            while not src.backfill_done:
+                back = ingest_job.run_backfill(s, src, impl, ctx)
+                typer.echo(f"{src.name}: backfill batch seen={back.seen} new={back.new}")
+
+
+@app.command("source-health")
+def source_health_cmd() -> None:
+    """Print each source's health using the SPEC-01 F8 thresholds."""
+    from bidtriage.core.db import session_scope
+    from bidtriage.worker import ingest_job
+    from bidtriage.worker.handlers import Context
+
+    with session_scope() as s:
+        rows = ingest_job.check_sources(s, Context(None))
+        for src, health in rows:
+            typer.echo(f"{src.name}: {health.status} ({health.detail})")
+        if not rows:
+            typer.echo("no sources registered")
+
+
+@app.command("ingest-metrics")
+def ingest_metrics(window_hours: int = 24) -> None:
+    """Print the SPEC-01 ingestion metrics over a trailing window."""
+    from bidtriage.core.db import session_scope
+    from bidtriage.worker.ingest_job import ingestion_metrics
+
+    with session_scope() as s:
+        m = ingestion_metrics(s, window_hours=window_hours)
+    rate = "n/a" if m.poll_success_rate is None else f"{m.poll_success_rate:.0%}"
+    typer.echo(f"window: last {m.window_hours}h")
+    typer.echo(f"polls: {m.polls} ({m.polls_failed} with errors), success rate {rate}")
+    typer.echo(f"messages: {m.messages_new} new, {m.duplicates_linked} duplicates linked")
+    typer.echo(
+        f"attachments: {m.attachments_extracted} extracted, {m.attachments_failed} not extracted"
+    )
+    typer.echo(f"ingestion lag: p50 {m.lag_p50_seconds}s p95 {m.lag_p95_seconds}s")
+
+
 @app.command("ingest-dir")
 def ingest_dir(
     directory: Path,
@@ -83,27 +186,44 @@ def ingest_dir(
     """Ingest every .eml in a directory synchronously through the whole pipeline (dev/demo)."""
     from sqlalchemy import select
 
+    from bidtriage.core.blobs import get_blob_store
     from bidtriage.core.config import get_settings
     from bidtriage.core.db import session_scope
     from bidtriage.core.models import Source
-    from bidtriage.ingestion.eml import parse_eml
+    from bidtriage.ingestion.msg import parse_upload
     from bidtriage.worker import pipeline
 
     extractor = _extractor(directory if fake else None)
     settings = get_settings()
+    blobs = get_blob_store()
     with session_scope() as s:
         src = s.scalar(select(Source).where(Source.kind == "file", Source.name == str(directory)))
         if src is None:
-            src = Source(kind="file", name=str(directory), status="active")
+            # Nothing polls this source afterwards, so it is paused: an unpolled source would
+            # otherwise read as `down` on the health page and trigger an alert (SPEC-01 F8).
+            src = Source(
+                kind="file",
+                name=str(directory),
+                status="active",
+                backfill_done=True,
+                paused=True,
+            )
             s.add(src)
             s.flush()
-        parsed_all = [(p, parse_eml(p.read_bytes())) for p in sorted(directory.glob("*.eml"))]
+        paths = sorted(p for pat in ("*.eml", "*.msg") for p in directory.glob(pat))
+        parsed_all = [(p, parse_upload(p.name, p.read_bytes())) for p in paths]
         parsed_all.sort(
             key=lambda t: (t[1].sent_at is None, t[1].sent_at or datetime.min.replace(tzinfo=UTC))
         )
         for path, parsed in parsed_all:
             msg, is_new = pipeline.ingest_parsed(
-                s, source_id=src.id, provider_message_id=path.name, parsed=parsed
+                s,
+                source_id=src.id,
+                provider_message_id=path.name,
+                parsed=parsed,
+                recipient_path=src.mailbox or str(directory),
+                ocr=settings.ingest_ocr,
+                blobs=blobs,
             )
             if not is_new:
                 typer.echo(f"{path.name}: duplicate of {msg.id}")

@@ -1,6 +1,12 @@
 # SPEC-01: Mailbox and Attachment Ingestion
 
-**Status:** Draft · **Priority:** P0 · **Depends on:** none · **Feeds:** SPEC-02
+**Status:** Implemented · **Priority:** P0 · **Depends on:** none · **Feeds:** SPEC-02
+
+> A review of the implementation found defects that this spec's tests do not catch, including
+> silent message loss on transient fetch failures, unbounded worker memory, and a Graph token
+> that is never refreshed. They are specified for repair in
+> [SPEC-10](SPEC-10-ingestion-hardening.md); do not connect a production mailbox before its
+> Phase 1 lands.
 
 ## Problem
 
@@ -91,17 +97,17 @@ kept as-is and marked `wrapped=true`.
 
 ## Acceptance Criteria
 
-- [ ] Given a connected Graph mailbox with 3 new messages, when the poller runs, then 3 `raw_message` rows exist with bodies, headers, and attachments, and the source mailbox shows no change in read state, flags, or folder.
-- [ ] Given the same 3 messages, when the poller runs again, then no new rows are created and the poll row shows `new=0, duplicates=3`.
-- [ ] Given one ITB sent to `estimating@` with CC to two estimators whose inboxes are also connected, when all three sources are polled, then exactly one `raw_message` exists with `copies=3` and three recipient paths.
-- [ ] Given an estimator forwards a GC email to the forward-to address with the note "Casey, worth a look?", when ingested, then the record's `from` is the GC's address, `sent_at` is the original date, `forwarded_by` is the estimator, and `forward_note` equals the note.
-- [ ] Given a 6-page text PDF ITB letter attached, when ingested, then `raw_attachment.text` contains the letter text with page markers.
-- [ ] Given a 120-page, 80 MB drawing set attached, when ingested, then the attachment is stored, `text` is null, and `large_document=true`.
-- [ ] Given a scanned 2-page PDF with no text layer, when ingested, then OCR text is present and `ocr=true`.
-- [ ] Given a ZIP with 3 PDFs and 1 nested ZIP, when ingested, then the 3 PDFs are extracted and the nested ZIP is listed but not opened.
-- [ ] Given a Microsoft SafeLinks-wrapped BuildingConnected URL, when links are harvested, then the unwrapped URL is stored with host class `buildingconnected`.
-- [ ] Given the Graph token is revoked, when 60 minutes pass, then the source status is `down`, an admin alert is sent once (not every 5 minutes), and the next digest shows the outage.
-- [ ] Given a 90-day backfill of 4,000 messages, when live mail arrives during backfill, then live messages are ingested within 15 minutes.
+- [x] Given a connected Graph mailbox with 3 new messages, when the poller runs, then 3 `raw_message` rows exist with bodies, headers, and attachments, and the source mailbox shows no change in read state, flags, or folder.
+- [x] Given the same 3 messages, when the poller runs again, then no new rows are created and the poll row shows `new=0, duplicates=3`.
+- [x] Given one ITB sent to `estimating@` with CC to two estimators whose inboxes are also connected, when all three sources are polled, then exactly one `raw_message` exists with `copies=3` and three recipient paths.
+- [x] Given an estimator forwards a GC email to the forward-to address with the note "Casey, worth a look?", when ingested, then the record's `from` is the GC's address, `sent_at` is the original date, `forwarded_by` is the estimator, and `forward_note` equals the note.
+- [x] Given a 6-page text PDF ITB letter attached, when ingested, then `raw_attachment.text` contains the letter text with page markers.
+- [x] Given a 120-page, 80 MB drawing set attached, when ingested, then the attachment is stored, `text` is null, and `large_document=true`.
+- [x] Given a scanned 2-page PDF with no text layer, when ingested, then OCR text is present and `ocr=true`.
+- [x] Given a ZIP with 3 PDFs and 1 nested ZIP, when ingested, then the 3 PDFs are extracted and the nested ZIP is listed but not opened.
+- [x] Given a Microsoft SafeLinks-wrapped BuildingConnected URL, when links are harvested, then the unwrapped URL is stored with host class `buildingconnected`.
+- [x] Given the Graph token is revoked, when 60 minutes pass, then the source status is `down`, an admin alert is sent once (not every 5 minutes), and the next digest shows the outage.
+- [x] Given a 90-day backfill of 4,000 messages, when live mail arrives during backfill, then live messages are ingested within 15 minutes.
 
 ## Edge Cases and Required Tests
 
@@ -124,6 +130,23 @@ kept as-is and marked `wrapped=true`.
 | Mailbox contains 30,000 non-ITB newsletters | All captured (classification is SPEC-02's job); ingestion throughput ≥ 5 msgs/sec | `test_throughput` |
 | Character sets: Windows-1252 subject, UTF-8 body with emoji | Decoded without mojibake | `test_charsets` |
 | Attachment filename with path separators or null bytes | Sanitized before blob write | `test_filename_sanitize` |
+
+## Implementation
+
+| Requirement | Code |
+|---|---|
+| F1 sources | `ingestion/graph_source.py`, `ingestion/imap_source.py`, `ingestion/file_source.py`, `ingestion/msg.py` (`.msg` upload), `worker/sources.py` (build from an encrypted `sources` row) |
+| F2 message record | `ingestion/eml.py`, `core/models.py` (`RawMessage`, `RawAttachment`, `MessageSource`, `MessageLink`) |
+| F3 dedupe | `worker/pipeline.py::find_duplicate` / `ingest_parsed` |
+| F4 forward unwrapping | `ingestion/eml.py::_unwrap_rfc822` / `_unwrap_inline` |
+| F5 attachment text | `ingestion/attachments.py`, blobs in `core/blobs.py` |
+| F6 link harvesting | `ingestion/links.py`, called on body *and* attachment text from `ingest_parsed` |
+| F7 scheduling, backfill | `worker/ingest_job.py::run_poll` / `run_backfill`, `worker/handlers.py::schedule_tick` |
+| F8 health, alerting | `ingestion/health.py`, `worker/ingest_job.py::check_sources` |
+| Metrics | `worker/ingest_job.py::ingestion_metrics`, `bidtriage ingest-metrics`, admin page |
+
+Operator commands: `bidtriage add-source`, `poll-sources`, `source-health`, `ingest-metrics`,
+`ingest-dir`. Setup is in `docs/runbooks/connect-m365-mailbox.md`.
 
 ## Technical Notes
 
