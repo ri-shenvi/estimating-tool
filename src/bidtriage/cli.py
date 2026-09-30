@@ -133,9 +133,17 @@ def poll_sources(
         if not sources:
             typer.echo("no active sources; add one with `bidtriage add-source`")
             raise typer.Exit(1)
+        failed = 0
         for src in sources:
-            impl = ctx.source_impl(src)
-            summary = ingest_job.run_poll(s, src, impl, ctx)
+            # One unreachable mailbox must not stop the others: the worker polls each source as its
+            # own job, and this command should behave the same way.
+            try:
+                impl = ctx.source_impl(src)
+                summary = ingest_job.run_poll(s, src, impl, ctx)
+            except Exception as e:  # noqa: BLE001 - reported per source, then carry on
+                failed += 1
+                typer.secho(f"{src.name}: poll failed: {e}", fg=typer.colors.RED)
+                continue
             typer.echo(
                 f"{src.name}: seen={summary.seen} new={summary.new} "
                 f"duplicates={summary.duplicates} errors={len(summary.errors)}"
@@ -147,6 +155,9 @@ def poll_sources(
                     break
             if src.backfill_stuck:
                 typer.echo(f"{src.name}: backfill stuck — {src.backfill_last_error}")
+        if failed:
+            typer.echo(f"\n{failed} of {len(sources)} source(s) could not be polled")
+            raise typer.Exit(1)
 
 
 @app.command("source-health")
