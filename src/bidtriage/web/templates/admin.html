@@ -1,0 +1,37 @@
+{% extends "base.html" %}{% block title %}Admin{% endblock %}
+{% block content %}
+<h1>Admin</h1>
+<div class="card"><h2>Sources</h2>
+<table><tr><th>Name</th><th>Kind</th><th>Mailbox</th><th>Health</th><th>Last poll</th><th>Backfill</th><th></th></tr>
+{% for s in sources %}<tr><td>{{ s.row.name }}</td><td>{{ s.row.kind }}</td><td>{{ s.row.mailbox }}</td>
+<td><strong>{{ s.health.status }}</strong>{% if s.health.detail %} <small>{{ s.health.detail }}</small>{% endif %}</td>
+<td>{% if s.last_poll %}{{ s.last_poll.mode }}: seen {{ s.last_poll.seen }}, new {{ s.last_poll.new }}, dup {{ s.last_poll.duplicates }}{% if s.last_poll.errors %}, <strong>{{ s.last_poll.errors|length }} error(s)</strong>{% endif %}{% else %}never{% endif %}</td>
+<td>{% if s.row.backfill_stuck %}<strong>stuck</strong> <small>{{ s.row.backfill_last_error or '' }}</small>{% elif s.row.backfill_done %}done{% else %}{{ s.row.backfill_days }}d pending{% if s.row.backfill_attempts %} ({{ s.row.backfill_attempts }} failed){% endif %}{% endif %}
+{% if s.skips %}<br><strong>{{ s.skips }} message(s) skipped</strong>{% endif %}</td>
+<td><form class="inline" method="post" action="/admin/sources/{{ s.row.id }}/pause"><button>{{ 'Resume' if s.row.paused else 'Pause' }}</button></form></td></tr>
+{% else %}<tr><td colspan="7">No sources. Add one with <code>bidtriage add-source</code> (see docs/runbooks).</td></tr>{% endfor %}
+</table>
+<h3>Manual upload</h3>
+<p>Drop an <code>.eml</code> or <code>.msg</code> file to ingest it through the normal pipeline.</p>
+<form method="post" action="/admin/upload" enctype="multipart/form-data"><input type="file" name="file" accept=".eml,.msg" required> <button>Upload</button></form>
+<h3>Ingestion, last 24h</h3>
+<p>Polls {{ ingestion.polls }} ({{ ingestion.polls_failed }} with errors{% if ingestion.poll_success_rate is not none %}, success rate {{ '%.0f'|format(ingestion.poll_success_rate * 100) }}%{% endif %}) &middot;
+new {{ ingestion.messages_new }} &middot; duplicates linked {{ ingestion.duplicates_linked }} &middot;
+skipped {{ ingestion.messages_skipped }} &middot;
+attachments extracted {{ ingestion.attachments_extracted }} / not extracted {{ ingestion.attachments_failed }} &middot;
+lag p50 {{ ingestion.lag_p50_seconds|round(1) if ingestion.lag_p50_seconds is not none else 'n/a' }}s,
+p95 {{ ingestion.lag_p95_seconds|round(1) if ingestion.lag_p95_seconds is not none else 'n/a' }}s</p>
+{% if request.query_params.get('uploaded') %}<p><em>Upload accepted: {{ request.query_params.get('uploaded') }}.</em></p>{% endif %}
+</div>
+<div class="card"><h2>Scoring profiles</h2>
+<table><tr><th>v</th><th>Name</th><th>Active</th><th>Note</th><th></th></tr>
+{% for p in profiles %}<tr><td>{{ p.version }}</td><td>{{ p.json.name }}</td><td>{{ '✓' if p.active else '' }}</td><td>{{ p.note }}</td><td>{% if not p.active %}<form class="inline" method="post" action="/admin/profiles/{{ p.version }}/activate"><button>Activate</button></form>{% endif %}</td></tr>{% endfor %}
+</table>
+<details><summary>New profile (JSON)</summary><form method="post" action="/admin/profiles"><textarea name="json_body" rows="12" style="width:100%"></textarea><br><input name="note" placeholder="note"> <button>Save draft</button></form></details>
+</div>
+<div class="card"><h2>GC directory</h2>
+<table><tr><th>GC</th><th>Tier</th><th>Domains</th><th>Set tier</th></tr>
+{% for g in gcs %}<tr><td>{{ g.canonical_name }}</td><td>{{ g.tier }}</td><td>{{ g.domains|map(attribute='domain')|join(', ') }}</td>
+<td><form class="inline" method="post" action="/admin/gcs/{{ g.id }}/tier"><select name="tier">{% for t in ['A','B','C','D','blocked','unknown'] %}<option {{ 'selected' if t == g.tier }}>{{ t }}</option>{% endfor %}</select> <input name="reason" placeholder="reason" size="18"> <button>Save</button></form></td></tr>{% endfor %}
+</table></div>
+{% endblock %}

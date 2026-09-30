@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: bidtriage
+      POSTGRES_PASSWORD: bidtriage
+      POSTGRES_DB: bidtriage
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bidtriage"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["bidtriage", "api"]
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://bidtriage:bidtriage@postgres:5432/bidtriage
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["full"]
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["bidtriage", "worker"]
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://bidtriage:bidtriage@postgres:5432/bidtriage
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["full"]
+
+volumes:
+  pgdata:

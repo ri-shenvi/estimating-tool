@@ -1,0 +1,79 @@
+{% import '_card.html.j2' as c %}
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Bids · {{ s.date }}</title></head>
+<body style="margin:0;padding:16px;background:#ffffff;font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:720px;">
+<tr><td>
+  <div style="font-size:20px;font-weight:bold;">Bids · {{ now|fmt_dt(none, false) }}</div>
+  <div style="color:#555;margin:4px 0 12px 0;">Good morning, {{ s.recipient_name }}.
+    {% if s.quiet %}Quiet morning. {{ s.in_progress_count }} bid{{ '' if s.in_progress_count == 1 else 's' }} in progress{% if s.next_due %}; next due {{ s.next_due.bid_due|fmt_dt(now, s.next_due.bid_due_time_known) }} ({{ s.next_due.project_name|truncate90 }}){% endif %}.
+    {% else %}{{ s.counts.new }} new · {{ s.counts.due_this_week }} due this week · {{ s.counts.changed }} changed · {{ s.counts.needs_decision }} need{{ 's' if s.counts.needs_decision == 1 else '' }} your decision · mailbox {% if s.degraded %}<b style="color:#b00020;">DEGRADED</b>{% else %}OK{% endif %}{% endif %}
+  </div>
+
+  {% if s.degraded %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fff4f4;border:1px solid #f0a0a0;margin-bottom:12px;"><tr><td style="padding:8px 12px;">
+    <b>System health</b>
+    <ul style="margin:6px 0 0 18px;padding:0;">{% for h in s.health if h.status != 'ok' %}<li><b>{{ h.name }}</b>: {{ h.status }} — {{ h.detail }}</li>{% endfor %}</ul>
+  </td></tr></table>
+  {% endif %}
+
+  {% for it in s.prebid_today %}
+  <div style="background:#fff8e1;border:1px solid #f0c36d;padding:8px 12px;margin-bottom:8px;"><b>Pre-bid TODAY {{ it.prebid_at|fmt_dt(now) }}{% if it.prebid_mandatory %} (mandatory){% endif %}:</b> {{ it.project_name|truncate90 }} — {{ it.gc_name }}</div>
+  {% endfor %}
+
+  {% if s.needs_decision %}
+  <h2 style="font-size:16px;margin:16px 0 8px 0;border-bottom:2px solid #0b3d91;">Needs your decision ({{ s.needs_decision|length }})</h2>
+  {% for it in s.needs_decision %}{{ c.card(it, now, s.recipient_role) }}{% endfor %}
+  {% endif %}
+
+  <h2 style="font-size:16px;margin:16px 0 8px 0;border-bottom:2px solid #0b3d91;">New since last digest ({{ s.counts.new }})</h2>
+  {% if s.counts.new == 0 %}<div style="color:#555;">Nothing new since yesterday.</div>{% endif %}
+  {% for it in s.new_by_band.bid %}{{ c.card(it, now, s.recipient_role) }}{% endfor %}
+  {% if s.new_by_band.consider %}
+  <div style="font-weight:bold;margin:8px 0 4px 0;">Consider ({{ s.new_by_band.consider|length + s.consider_overflow }})</div>
+  {% for it in s.new_by_band.consider %}{{ c.card(it, now, s.recipient_role) }}{% endfor %}
+  {% if s.consider_overflow %}<div style="color:#555;">+{{ s.consider_overflow }} more on the <a href="{{ s.review_url }}">review page</a>.</div>{% endif %}
+  {% endif %}
+  {% if s.new_by_band.likely_pass %}
+  <div style="font-weight:bold;margin:8px 0 4px 0;">Likely pass ({{ s.new_by_band.likely_pass|length }})</div>
+  <ul style="margin:0 0 8px 18px;padding:0;color:#444;">{% for it in s.new_by_band.likely_pass %}<li>[{{ it.score }}] <a href="{{ it.open_url }}" style="color:#0b3d91;">{{ it.project_name|truncate90 }}</a> — {{ it.gc_name or 'Unknown GC' }} · {{ it.bid_due|fmt_dt(now, it.bid_due_time_known) if it.bid_due else 'Due date unknown' }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if s.new_by_band.pass or s.hidden_low_count %}
+  <div style="color:#555;">{{ s.new_by_band.pass|length + s.hidden_low_count }} low-fit invitation{{ '' if (s.new_by_band.pass|length + s.hidden_low_count) == 1 else 's' }} not shown · <a href="{{ s.review_url }}?band=pass">view</a></div>
+  {% endif %}
+
+  {% if s.due_this_week %}
+  <h2 style="font-size:16px;margin:16px 0 8px 0;border-bottom:2px solid #0b3d91;">Due this week ({{ s.due_this_week|length }})</h2>
+  <table role="presentation" width="100%" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+    <tr style="background:#f1f1f1;"><th align="left">When</th><th align="left">Project</th><th align="left">GC</th><th align="left">Status</th><th align="left">Who</th><th align="left">Add.</th><th align="left">Docs</th></tr>
+    {% for it in s.due_this_week %}
+    <tr style="border-bottom:1px solid #e5e5e5;">
+      <td>{% if it.bid_due and now <= it.bid_due %}{{ it.bid_due|fmt_dt(now, it.bid_due_time_known) }}{% elif it.prebid_at %}Pre-bid {{ it.prebid_at|fmt_dt(now) }}{% endif %}</td>
+      <td><a href="{{ it.open_url }}" style="color:#0b3d91;">{{ it.project_name|truncate90 }}</a></td>
+      <td>{{ it.gc_name or '' }}</td><td>{{ it.status|humanize }}</td><td>{{ it.assignee_name or '—' }}</td><td>{{ it.addenda_count }}</td><td>{{ '✓' if it.docs_host else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if s.changed or s.passed_changed %}
+  <h2 style="font-size:16px;margin:16px 0 8px 0;border-bottom:2px solid #0b3d91;">Changed ({{ s.changed|length + s.passed_changed|length }})</h2>
+  <ul style="margin:0 0 8px 18px;padding:0;">
+    {% for it in s.changed %}<li><a href="{{ it.open_url }}" style="color:#0b3d91;">{{ it.project_name|truncate90 }}</a> — {{ it.change_summary }}</li>{% endfor %}
+    {% for it in s.passed_changed %}<li style="color:#777;">Passed job changed materially: <a href="{{ it.open_url }}" style="color:#0b3d91;">{{ it.project_name|truncate90 }}</a> — {{ it.change_summary }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if s.needs_review %}
+  <h2 style="font-size:16px;margin:16px 0 8px 0;border-bottom:2px solid #0b3d91;">Needs review ({{ s.needs_review|length }})</h2>
+  <ul style="margin:0 0 8px 18px;padding:0;">{% for r in s.needs_review %}<li>{{ r.kind|humanize }}: <a href="{{ r.url }}" style="color:#0b3d91;">{{ r.title }}</a></li>{% endfor %}</ul>
+  {% endif %}
+
+  {% if not s.degraded %}
+  <div style="margin-top:16px;color:#777;font-size:12px;">System health: {% for h in s.health %}{{ h.name }} {{ h.status }}{{ ', ' if not loop.last }}{% else %}no sources configured{% endfor %}</div>
+  {% endif %}
+  <div style="margin-top:12px;padding-top:8px;border-top:1px solid #ddd;color:#777;font-size:12px;">
+    <a href="{{ s.review_url }}" style="color:#0b3d91;">Review page</a> · <a href="{{ s.calendar_url }}" style="color:#0b3d91;">Calendar feed</a> · scoring profile v{{ s.profile_version }} · generated {{ s.generated_at|fmt_dt(none, true) }}
+  </div>
+</td></tr></table>
+</body></html>

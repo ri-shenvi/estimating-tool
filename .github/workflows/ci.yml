@@ -1,0 +1,33 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bidtriage
+          POSTGRES_PASSWORD: bidtriage
+          POSTGRES_DB: bidtriage
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bidtriage" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://bidtriage:bidtriage@localhost:5432/bidtriage
+      SECRET_KEY: ci-secret-key-ci-secret-key-ci-secret-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv sync --all-groups
+      - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run lint-imports
+      - run: uv run pytest --cov=bidtriage --cov-report=term-missing
+      - name: extraction eval (fixtures, offline)
+        run: uv run bidtriage eval-extraction tests/fixtures/messages --offline
