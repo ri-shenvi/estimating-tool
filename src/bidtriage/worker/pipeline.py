@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -28,13 +29,16 @@ from bidtriage.core.models import (
     MessageLink,
     MessageSource,
     Opportunity,
+    OpportunityKey,
     OpportunitySource,
+    Outcome,
     RawAttachment,
     RawMessage,
     Score,
     ScoringProfile,
     User,
 )
+from bidtriage.decisions.state import InvalidTransitionError, transition
 from bidtriage.extraction.geocode import Geocoder, apply_geocode
 from bidtriage.extraction.postprocess import PLATFORM_DOMAINS
 from bidtriage.extraction.prefilter import obviously_not_bid
@@ -48,6 +52,7 @@ from bidtriage.extraction.protocol import (
 from bidtriage.extraction.schema import (
     EXTRACTABLE_KINDS,
     KIND_REVIEW_CONFIDENCE,
+    BidType,
     ExtractedOpportunity,
     Kind,
 )
@@ -63,9 +68,34 @@ from bidtriage.ingestion.attachments import (
 )
 from bidtriage.ingestion.eml import ParsedMessage
 from bidtriage.ingestion.links import harvest_links
-from bidtriage.resolution.evidence import Candidate, Incoming, decide, evidence
-from bidtriage.resolution.merge import addendum_gaps, merge_date
-from bidtriage.resolution.normalize import fingerprint, normalize_domain, normalize_name
+from bidtriage.resolution.evidence import (
+    REVIEW,
+    Candidate,
+    Evidence,
+    Incoming,
+    decide,
+    evidence,
+)
+from bidtriage.resolution.merge import (
+    DATE_MOVERS,
+    MATERIAL_SIZE_RATIO,
+    addendum_gaps,
+    award_outcome,
+    gap_detection_enabled,
+    material_change,
+    merge_date,
+    merge_scope,
+    size_change_ratio,
+    size_signals_differ,
+    with_change_count,
+)
+from bidtriage.resolution.normalize import (
+    fingerprint,
+    geohash,
+    name_tokens,
+    normalize_domain,
+    normalize_name,
+)
 from bidtriage.scoring.engine import ScoreResult, score
 from bidtriage.scoring.profile import DEFAULT_PROFILE, Profile
 from bidtriage.scoring.snapshot import CalendarSnapshot, GCSnapshot, OpportunitySnapshot
@@ -650,6 +680,27 @@ def enqueue_stale_prompt_reextractions(
 
 # ---------------------------------------------------------------- resolution
 
+#: Roles an inbound message can take on an opportunity. `internal` is Ferry's own side of the
+#: thread: kept as a source so the history is complete, but it never changes a field.
+ORIGIN_ROLES = {"itb", "rfb"}
+
+#: How wide a net the geocode pre-filter casts. Five characters is ~5 km, comfortably wider than
+#: the 1 km test `evidence()` applies, so a cell boundary cannot lose a real match.
+GEOHASH_PREFIX = 5
+
+#: pg_trgm similarity floor for name candidates, applied through the `%` operator. Well below the
+#: 0.85 the decision needs, so a rename still reaches `evidence()`.
+#:
+#: It has to be `%` and not `similarity(a, b) > x`: `gin_trgm_ops` indexes the operator, and a
+#: function call in the predicate is not indexable at all — `EXPLAIN` on the function form finds no
+#: index plan even with `enable_seqscan` off. `%` reads its threshold from a GUC rather than the
+#: query, so the threshold is set per transaction just before the query runs.
+NAME_TRIGRAM_FLOOR = 0.25
+
+#: Ceiling on the soft-candidate set. The pre-filter is selective enough that reaching this means
+#: something pathological (a GC with hundreds of live jobs); scoring stops at the most recent.
+MAX_SOFT_CANDIDATES = 400
+
 
 def _gc_records(session: Session) -> list[GCRecord]:
     return [
@@ -664,22 +715,41 @@ def _gc_records(session: Session) -> list[GCRecord]:
     ]
 
 
-def _platform_ids(links: list[str]) -> set[str]:
-    import re
+#: Ordered most specific first. Each entry is (namespace, pattern); the namespace keeps a Procore
+#: `9912` from colliding with a BuildingConnected `9912`, because these become hard keys that merge
+#: at confidence 1.0 and a collision there is a false merge (ADR-008).
+#:
+#: Procore's first path segment is the *company*, not the project — `app.procore.com/2318842/...`
+#: is the same number for every job that GC posts — so it is deliberately skipped and the package
+#: id further down the path is taken instead.
+_PLATFORM_ID_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("bc", re.compile(r"buildingconnected\.com/(?:projects|bids|rfp)/([0-9a-f]{12,})", re.I)),
+    (
+        "procore",
+        re.compile(r"procore\.com/\d+/(?:[\w-]+/)*?(?:bid_packages|packages|projects)/(\d+)", re.I),
+    ),
+    ("pkg", re.compile(r"[?&]bid[_]?[Pp]ackage[_]?[Ii]d=([\w-]+)")),
+    ("proj", re.compile(r"[?&](?:projectId|project_id)=([\w-]+)")),
+)
 
+
+def platform_ids(links: list[str]) -> set[str]:
+    """Namespaced platform identifiers harvested from a message's links (SPEC-03 F2.1).
+
+    One id per link, the most specific that matches: a bid-package id beats a project id, because
+    two packages inside one project are two solicitations and only one of them is ours.
+    """
     ids: set[str] = set()
     for u in links:
-        m = (
-            re.search(r"buildingconnected\.com/(?:projects|bids|rfp)/([0-9a-f]{12,})", u, re.I)
-            or re.search(r"procore\.com/(\d+)/", u)
-            or re.search(r"[?&](?:bidPackageId|projectId|project_id)=([\w-]+)", u)
-        )
-        if m:
-            ids.add(m.group(1).lower())
+        for namespace, pattern in _PLATFORM_ID_PATTERNS:
+            m = pattern.search(u)
+            if m:
+                ids.add(f"{namespace}:{m.group(1).lower()}")
+                break
     return ids
 
 
-def _thread_ids(msg: RawMessage) -> set[str]:
+def thread_ids(msg: RawMessage) -> set[str]:
     ids = (
         {str(r) for r in msg.references}
         | ({msg.in_reply_to} if msg.in_reply_to else set())
@@ -688,11 +758,176 @@ def _thread_ids(msg: RawMessage) -> set[str]:
     return {i for i in ids if i}
 
 
+def message_links(session: Session, message_id: str) -> list[str]:
+    return [
+        lk.url
+        for lk in session.scalars(
+            select(MessageLink).where(MessageLink.message_id == message_id)
+        ).all()
+    ]
+
+
 def _short_location(loc: dict[str, Any]) -> str | None:
     city, state = loc.get("city"), loc.get("state")
     if city and state:
         return f"{city}, {state}"
     return city or loc.get("raw")
+
+
+def _is_internal(session: Session, msg: RawMessage, settings_domains: set[str]) -> bool:
+    """True when this message came from Ferry's own side (SPEC-03 edge cases: internal reply).
+
+    Own-domain configuration plus the users table, so a new estimator is recognised without a
+    redeploy.
+    """
+    addr = (msg.from_addr or "").strip().lower()
+    if not addr or "@" not in addr:
+        return False
+    if normalize_domain(addr) in settings_domains:
+        return True
+    return session.scalar(select(User.id).where(func.lower(User.email) == addr)) is not None
+
+
+def _internal_domains() -> set[str]:
+    from bidtriage.core.config import get_settings
+
+    raw = get_settings().internal_domains
+    return {normalize_domain(d) for d in raw.split(",") if d.strip()}
+
+
+def _has_pg_trgm(session: Session) -> bool:
+    """Whether trigram candidate generation is available (SPEC-03 technical notes).
+
+    Tests and small deployments run on SQLite, and a PostgreSQL without the extension is a real
+    possibility when the deploy role cannot `CREATE EXTENSION`; both fall back to token LIKE.
+    """
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return False
+    cached = getattr(bind, "_bidtriage_pg_trgm", None)
+    if cached is None:
+        cached = bool(session.scalar(text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")))
+        bind._bidtriage_pg_trgm = cached  # type: ignore[union-attr]
+    return bool(cached)
+
+
+def candidate_ids(session: Session, i: Incoming, keys: set[tuple[str, str]]) -> list[str]:
+    """Opportunity ids worth scoring against this message, cheaply (SPEC-03 F2, technical notes).
+
+    Two passes. Hard keys resolve through `opportunity_keys` and *include archived* opportunities,
+    because a reply on an archived thread should reactivate it rather than start a second copy.
+    Soft candidates come from an indexed OR of GC, fingerprint, geocode bucket and name, and are
+    limited to live opportunities.
+    """
+    hard: list[str] = []
+    if keys:
+        hard = list(
+            session.scalars(
+                select(OpportunityKey.opportunity_id).where(
+                    tuple_(OpportunityKey.kind, OpportunityKey.value).in_(sorted(keys))
+                )
+            ).all()
+        )
+
+    clauses = []
+    fp = fingerprint(i.project_name, i.gc_domain, i.city, i.bid_due)
+    if any((i.project_name, i.gc_domain, i.city, i.bid_due)):
+        # Skipped when there is nothing to fingerprint, or the empty-input hash would match every
+        # other record we knew nothing about.
+        clauses.append(Opportunity.fingerprint == fp)
+    if i.gc_id:
+        clauses.append(Opportunity.gc_id == i.gc_id)
+    gh = geohash(i.lat, i.lon)
+    if gh:
+        clauses.append(Opportunity.geohash.startswith(gh[:GEOHASH_PREFIX]))
+    if i.project_number:
+        clauses.append(
+            Opportunity.canonical["project_number"]["value"].as_string() == i.project_number
+        )
+    normalized = normalize_name(i.project_name)
+    if normalized:
+        if _has_pg_trgm(session):
+            # `SET LOCAL` so the threshold is scoped to this transaction and cannot leak across a
+            # pooled connection; it reverts on commit or rollback.
+            session.execute(text(f"SET LOCAL pg_trgm.similarity_threshold = {NAME_TRIGRAM_FLOOR}"))
+            clauses.append(Opportunity.normalized_name.op("%", is_comparison=True)(normalized))
+        else:
+            tokens = name_tokens(i.project_name)[:3]
+            # `normalize_name` strips everything but letters, digits and spaces, so a token can
+            # never carry a LIKE wildcard.
+            clauses.extend(Opportunity.normalized_name.like(f"%{tok}%") for tok in tokens)
+            if not tokens:
+                # Every token was too short to be worth a scan ("Bldg 3" normalizes to "3"); fall
+                # back to the whole normalized name so the record is still reachable.
+                clauses.append(Opportunity.normalized_name == normalized)
+    # No clauses means the message carries nothing to match on. An empty `or_()` is a no-op in
+    # SQL, which would return every live opportunity, so stop at the hard keys instead.
+    soft: list[str] = []
+    if clauses:
+        soft = list(
+            session.scalars(
+                select(Opportunity.id)
+                .where(Opportunity.archived_at.is_(None), or_(*clauses))
+                .order_by(Opportunity.last_activity_at.desc())
+                .limit(MAX_SOFT_CANDIDATES)
+            ).all()
+        )
+    seen: dict[str, None] = {}
+    for oid in [*hard, *soft]:
+        seen.setdefault(oid, None)
+    return list(seen)
+
+
+def load_candidates(session: Session, ids: list[str]) -> list[tuple[Opportunity, Candidate]]:
+    """Build the matching inputs for a set of opportunities in a fixed number of queries."""
+    if not ids:
+        return []
+    opps = session.scalars(select(Opportunity).where(Opportunity.id.in_(ids))).all()
+    threads: dict[str, set[str]] = {}
+    platforms: dict[str, set[str]] = {}
+    for key in session.scalars(
+        select(OpportunityKey).where(OpportunityKey.opportunity_id.in_(ids))
+    ).all():
+        bucket = threads if key.kind == "thread" else platforms
+        bucket.setdefault(key.opportunity_id, set()).add(key.value)
+    out = []
+    for o in opps:
+        c = o.canonical
+        due_raw = (c.get("bid_due") or {}).get("value")
+        out.append(
+            (
+                o,
+                Candidate(
+                    opportunity_id=o.id,
+                    project_name=(c.get("project_name") or {}).get("value"),
+                    gc_id=o.gc_id,
+                    gc_domain=c.get("gc_domain"),
+                    city=(c.get("location") or {}).get("city"),
+                    lat=o.lat,
+                    lon=o.lon,
+                    # `aware()` because a canonical record written before timezones were enforced
+                    # (or by hand) would otherwise make the date comparison raise.
+                    bid_due=aware(datetime.fromisoformat(due_raw)) if due_raw else None,
+                    owner_name=(c.get("owner_name") or {}).get("value"),
+                    project_number=(c.get("project_number") or {}).get("value"),
+                    platform_ids=platforms.get(o.id, set()),
+                    thread_ids=threads.get(o.id, set()),
+                ),
+            )
+        )
+    return out
+
+
+def _remember_keys(session: Session, opportunity_id: str, keys: set[tuple[str, str]]) -> None:
+    """Index a message's hard keys against the opportunity it landed on, ignoring re-adds."""
+    existing = {
+        (k.kind, k.value)
+        for k in session.scalars(
+            select(OpportunityKey).where(OpportunityKey.opportunity_id == opportunity_id)
+        ).all()
+    }
+    for kind, value in sorted(keys - existing):
+        session.add(OpportunityKey(opportunity_id=opportunity_id, kind=kind, value=value[:998]))
 
 
 def resolve_message(
@@ -703,14 +938,15 @@ def resolve_message(
     clock: Clock | None = None,
     geocoder: Callable[[str], tuple[float, float] | None] | None = None,
 ) -> tuple[Opportunity, str]:
-    """Attach a message to an opportunity (SPEC-03). Returns (opportunity, decision)."""
+    """Attach a message to an opportunity (SPEC-03 F2). Returns (opportunity, decision).
+
+    The decision is one of `merge`, `review` (attached provisionally, queued as a possible
+    duplicate), `related` (a new opportunity linked to the one it resembles) or `new`.
+    """
     clock = clock or SystemClock()
     now = clock.now()
     x = ExtractedOpportunity.model_validate(ext.payload)
-    links = [
-        lk.url
-        for lk in session.scalars(select(MessageLink).where(MessageLink.message_id == msg.id)).all()
-    ]
+    links = message_links(session, msg.id)
     contact_domains = [c.email for c in x.gc_contacts if c.email] + (
         [msg.from_addr]
         if msg.from_addr and not any(msg.from_addr.endswith(p) for p in PLATFORM_DOMAINS)
@@ -728,8 +964,9 @@ def resolve_message(
                 "confidence": max(x.gc_name.confidence, gc_match.confidence),
             }
         )
+    internal = _is_internal(session, msg, _internal_domains())
     gc_id = gc_match.gc.id if gc_match.gc else None
-    if gc_id is None and x.gc_name.value:
+    if gc_id is None and x.gc_name.value and not internal:
         gc = GC(
             canonical_name=x.gc_name.value, kind="gc", created_from="extraction", created_at=now
         )
@@ -752,6 +989,7 @@ def resolve_message(
         geo = geocoder(x.location.raw)
         if geo:
             lat, lon = geo
+    keys = {("thread", t) for t in thread_ids(msg)} | {("platform", p) for p in platform_ids(links)}
     incoming = Incoming(
         project_name=x.project_name.value,
         gc_id=gc_id,
@@ -762,73 +1000,41 @@ def resolve_message(
         bid_due=x.bid_due.value,
         owner_name=x.owner_name.value,
         project_number=x.project_number.value,
-        platform_ids=_platform_ids(links),
-        thread_ids=_thread_ids(msg),
+        platform_ids=platform_ids(links),
+        thread_ids=thread_ids(msg),
         kind=x.kind.value,
     )
 
-    # candidates: every non-archived opportunity (small volume). Postgres could prefilter with pg_trgm.
-    best: tuple[float, Opportunity | None, Any] = (-1.0, None, None)
-    for o in session.scalars(select(Opportunity).where(Opportunity.archived_at.is_(None))).all():
-        c = o.canonical
-        srcs = session.scalars(
-            select(OpportunitySource).where(OpportunitySource.opportunity_id == o.id)
-        ).all()
-        thread: set[str] = set()
-        pids: set[str] = set()
-        for s in srcs:
-            m = session.get(RawMessage, s.message_id)
-            if m:
-                thread |= _thread_ids(m)
-                pids |= _platform_ids(
-                    [
-                        lk.url
-                        for lk in session.scalars(
-                            select(MessageLink).where(MessageLink.message_id == m.id)
-                        ).all()
-                    ]
-                )
-        cand = Candidate(
-            opportunity_id=o.id,
-            project_name=(c.get("project_name") or {}).get("value"),
-            gc_id=o.gc_id,
-            gc_domain=c.get("gc_domain"),
-            city=(c.get("location") or {}).get("city"),
-            lat=o.lat,
-            lon=o.lon,
-            bid_due=datetime.fromisoformat(c["bid_due"]["value"])
-            if (c.get("bid_due") or {}).get("value")
-            else None,
-            owner_name=(c.get("owner_name") or {}).get("value"),
-            project_number=(c.get("project_number") or {}).get("value"),
-            platform_ids=pids,
-            thread_ids=thread,
-        )
-        ev = evidence(cand, incoming)
-        if ev.score > best[0]:
-            best = (ev.score, o, ev)
+    scored = [
+        (o, evidence(cand, incoming))
+        for o, cand in load_candidates(session, candidate_ids(session, incoming, keys))
+    ]
+    best: tuple[float, Opportunity | None, Evidence | None] = (-1.0, None, None)
+    if scored:
+        o, ev = min(scored, key=lambda row: _match_rank(row[0], row[1], incoming))
+        best = (ev.score, o, ev)
 
     decision = "new"
-    if best[1] is not None:
-        decision = decide(best[2], incoming_kind=x.kind.value, candidate_same_gc=best[2].same_gc)
+    if best[1] is not None and best[2] is not None:
+        decision = decide(best[2], incoming_kind=x.kind.value)
 
-    if decision in ("merge", "review") and best[1] is not None:
+    if decision in ("merge", "review") and best[1] is not None and best[2] is not None:
         opp = best[1]
-        _apply_update(session, opp, x, msg, now, provisional=(decision == "review"))
-        session.add(
-            OpportunitySource(
-                opportunity_id=opp.id,
-                message_id=msg.id,
-                role=x.kind.value,
-                attached_at=now,
-                evidence={
-                    "score": best[2].score,
-                    "hard_key": best[2].hard_key,
-                    "components": best[2].components,
-                    "provisional": decision == "review",
-                },
-            )
-        )
+        if opp.archived_at is not None:
+            _reactivate(opp, now)
+        role = "internal" if internal else x.kind.value
+        if internal:
+            # Ferry's own reply-all belongs in the history, but nothing an estimator wrote to a GC
+            # is an authoritative statement of the GC's dates or scope (SPEC-03 edge cases).
+            opp.last_activity_at = now
+        else:
+            _apply_update(session, opp, x, msg, now, provisional=(decision == "review"))
+        if best[2].hard_key is not None:
+            # A platform project id or a shared thread settles the identity, so an earlier
+            # provisional attach is no longer an open question for a human.
+            opp.flags = [f for f in opp.flags if f != "possible_duplicate"]
+        _attach_source(session, opp, msg, role, now, best[2], provisional=decision == "review")
+        _remember_keys(session, opp.id, keys)
     else:
         opp = Opportunity(
             status="new",
@@ -840,27 +1046,30 @@ def resolve_message(
             ),
             lat=lat,
             lon=lon,
+            geohash=geohash(lat, lon),
             first_seen_at=now,
             last_activity_at=now,
             flags=[f.value for f in x.flags],
         )
-        if x.kind != Kind.itb and x.kind != Kind.rfb:
+        if x.kind.value not in ORIGIN_ROLES:
+            # SPEC-03 F2.4: an update that matches nothing becomes a visible stub rather than a
+            # dropped message — the missing original is the thing worth seeing.
             opp.flags = [*opp.flags, "orphan_update"]
         session.add(opp)
         session.flush()
-        session.add(
-            OpportunitySource(
-                opportunity_id=opp.id,
-                message_id=msg.id,
-                role="origin",
-                attached_at=now,
-                evidence={},
-            )
+        _attach_source(
+            session,
+            opp,
+            msg,
+            "internal" if internal else "origin",
+            now,
+            best[2] if decision == "related" else None,
+            provisional=False,
         )
+        _remember_keys(session, opp.id, keys)
         if decision == "related" and best[1] is not None:
-            opp.related_project_ids = [best[1].id]
-            best[1].related_project_ids = [*best[1].related_project_ids, opp.id]
-        if x.kind == Kind.addendum:
+            _link_related(opp, best[1], best[2])
+        if x.kind == Kind.addendum or x.addendum_label or x.addendum_number:
             _record_addendum(session, opp, x, msg, now)
     session.flush()
     enqueue(
@@ -873,11 +1082,120 @@ def resolve_message(
     return opp, decision
 
 
+def _match_rank(opp: Opportunity, ev: Evidence, incoming: Incoming) -> tuple[float, float, float]:
+    """Sort key for picking the best candidate: highest score, then nearest date, then most recent.
+
+    Two rebids of one project score identically on name, GC and geography, so without a tiebreak an
+    addendum would attach to whichever row the database happened to return first. The date the
+    message itself states is the honest way to choose between them.
+    """
+    candidate_due = (opp.canonical.get("bid_due") or {}).get("value")
+    if candidate_due and incoming.bid_due:
+        distance = abs(
+            (
+                aware(datetime.fromisoformat(candidate_due)) - incoming.bid_due  # type: ignore[operator]
+            ).total_seconds()
+        )
+    else:
+        distance = float("inf")
+    last = aware(opp.last_activity_at)
+    return (-ev.score, distance, -(last.timestamp() if last else 0.0))
+
+
+def possible_duplicates(
+    session: Session, opp: Opportunity, *, limit: int = 10
+) -> list[tuple[Opportunity, Evidence]]:
+    """Opportunities this one resembles, best first — the review page's merge picker (SPEC-03 F2.3).
+
+    Same candidate generation and same scoring as automatic resolution, so what a human sees is
+    what the matcher saw.
+    """
+    c = opp.canonical
+    due_raw = (c.get("bid_due") or {}).get("value")
+    mine = Incoming(
+        project_name=(c.get("project_name") or {}).get("value"),
+        gc_id=opp.gc_id,
+        gc_domain=c.get("gc_domain"),
+        city=(c.get("location") or {}).get("city"),
+        lat=opp.lat,
+        lon=opp.lon,
+        bid_due=aware(datetime.fromisoformat(due_raw)) if due_raw else None,
+        owner_name=(c.get("owner_name") or {}).get("value"),
+        project_number=(c.get("project_number") or {}).get("value"),
+        kind=c.get("kind", "itb"),
+    )
+    keys = {
+        (k.kind, k.value)
+        for k in session.scalars(
+            select(OpportunityKey).where(OpportunityKey.opportunity_id == opp.id)
+        ).all()
+    }
+    scored = [
+        (other, evidence(cand, mine))
+        for other, cand in load_candidates(session, candidate_ids(session, mine, keys))
+        if other.id != opp.id
+    ]
+    # Only the review band. Below 0.6 the matcher already decided these are different projects, and
+    # offering them as merge targets would invite the false merge ADR-008 is built to avoid.
+    in_band = [row for row in scored if row[1].score >= REVIEW]
+    return sorted(in_band, key=lambda row: row[1].score, reverse=True)[:limit]
+
+
+def _attach_source(
+    session: Session,
+    opp: Opportunity,
+    msg: RawMessage,
+    role: str,
+    now: datetime,
+    ev: Evidence | None,
+    *,
+    provisional: bool,
+) -> None:
+    if session.get(OpportunitySource, (opp.id, msg.id)) is not None:
+        return
+    session.add(
+        OpportunitySource(
+            opportunity_id=opp.id,
+            message_id=msg.id,
+            role=role,
+            attached_at=now,
+            evidence={
+                "score": ev.score,
+                "hard_key": ev.hard_key,
+                "components": ev.components,
+                "notes": ev.notes,
+                "provisional": provisional,
+            }
+            if ev is not None
+            else {},
+        )
+    )
+
+
+def _link_related(new: Opportunity, other: Opportunity, ev: Evidence | None) -> None:
+    """Two solicitations for one real-world project, kept apart but visible to each other."""
+    new.related_project_ids = sorted({*new.related_project_ids, other.id})
+    other.related_project_ids = sorted({*other.related_project_ids, new.id})
+    if ev is not None and ev.rebid:
+        new.flags = sorted({*new.flags, "rebid_of_related"})
+
+
+def _reactivate(opp: Opportunity, now: datetime) -> None:
+    """A message on an archived opportunity's thread brings it back, flagged (SPEC-03 edge cases)."""
+    opp.archived_at = None
+    opp.flags = sorted({*opp.flags, "reactivated"})
+    if opp.status == "archived":
+        opp.status = "undecided"
+    opp.changed_since_digest = True
+    opp.last_activity_at = now
+
+
 def _canonical_from(
     x: ExtractedOpportunity, gc_domain: str | None, as_of: datetime | None = None
 ) -> dict[str, Any]:
     c = x.model_dump(mode="json")
     c["gc_domain"] = gc_domain
+    c["delivery_channels"] = [x.delivery_channel.value]
     if as_of is not None:
         for field in ("bid_due", "rfi_deadline", "intent_due"):
             if (c.get(field) or {}).get("value"):
@@ -887,16 +1205,21 @@ def _canonical_from(
 
 def _record_addendum(
     session: Session, opp: Opportunity, x: ExtractedOpportunity, msg: RawMessage, now: datetime
-) -> None:
+) -> str | None:
+    """Add or count an addendum. Returns a change note, or None when this is a duplicate copy.
+
+    Numbering gaps raise `addendum_gap`, unless the opportunity carries a label we cannot order
+    ("Addendum A", "Bulletin 1"), in which case the check is off for that opportunity.
+    """
     label = x.addendum_label or (
         f"Addendum {x.addendum_number}" if x.addendum_number else f"Addendum ({msg.subject[:30]})"
     )
-    if (
-        session.scalar(
-            select(Addendum).where(Addendum.opportunity_id == opp.id, Addendum.label == label)
-        )
-        is None
-    ):
+    label = label[:50]
+    existing = session.scalar(
+        select(Addendum).where(Addendum.opportunity_id == opp.id, Addendum.label == label)
+    )
+    note: str | None
+    if existing is None:
         session.add(
             Addendum(
                 opportunity_id=opp.id,
@@ -908,15 +1231,103 @@ def _record_addendum(
             )
         )
         session.flush()
-    nums = [
-        a.number
-        for a in session.scalars(select(Addendum).where(Addendum.opportunity_id == opp.id)).all()
-        if a.number is not None
-    ]
-    if addendum_gaps(nums):
-        opp.flags = list({*opp.flags, "addendum_gap"})
-    elif "addendum_gap" in opp.flags:
+        note = f"{label} received" + (
+            f": {x.changes_described[:80]}" if x.changes_described else ""
+        )
+        session.add(
+            FieldHistory(
+                opportunity_id=opp.id,
+                field="addenda",
+                old={"labels": _addendum_labels(session, opp.id, exclude=label)},
+                new={"label": label, "number": x.addendum_number},
+                message_id=msg.id,
+                applied=True,
+                changed_at=now,
+            )
+        )
+    elif existing.message_id != msg.id:
+        # CC fan-out, or the same addendum forwarded again: one record, a higher copy count.
+        existing.copies += 1
+        note = None
+    else:
+        note = None
+    rows = session.scalars(select(Addendum).where(Addendum.opportunity_id == opp.id)).all()
+    gaps = (
+        addendum_gaps([a.number for a in rows if a.number is not None])
+        if gap_detection_enabled([a.label for a in rows])
+        else []
+    )
+    if gaps:
+        opp.flags = sorted({*opp.flags, "addendum_gap"})
+    else:
         opp.flags = [f for f in opp.flags if f != "addendum_gap"]
+    return note
+
+
+def _addendum_labels(
+    session: Session, opportunity_id: str, *, exclude: str | None = None
+) -> list[str]:
+    return sorted(
+        a.label
+        for a in session.scalars(
+            select(Addendum).where(Addendum.opportunity_id == opportunity_id)
+        ).all()
+        if a.label != exclude
+    )
+
+
+def set_status(
+    session: Session,
+    opp: Opportunity,
+    target: str,
+    *,
+    at: datetime,
+    message_id: str | None = None,
+    user_id: str | None = None,
+) -> bool:
+    """Move an opportunity's status and record it in `field_history` (SPEC-03 F4, F5).
+
+    Returns False when the lifecycle forbids the move, so an award email for a job already marked
+    won does not raise out of the middle of resolution.
+    """
+    previous = opp.status
+    if previous == target:
+        return False
+    try:
+        opp.status = transition(previous, target)
+    except InvalidTransitionError:
+        # The lifecycle says no, but a sender telling us the job is over is not something to
+        # drop on the floor. Record it unapplied so it reaches the history and the digest, the
+        # same way a locked field does (SPEC-03 F3, F4).
+        log.info("refused status %s → %s for %s", previous, target, opp.id)
+        session.add(
+            FieldHistory(
+                opportunity_id=opp.id,
+                field="status",
+                old={"value": previous},
+                new={"value": target},
+                message_id=message_id,
+                user_id=user_id,
+                applied=False,
+                changed_at=at,
+            )
+        )
+        return False
+    session.add(
+        FieldHistory(
+            opportunity_id=opp.id,
+            field="status",
+            old={"value": previous},
+            new={"value": target},
+            message_id=message_id,
+            user_id=user_id,
+            applied=True,
+            changed_at=at,
+        )
+    )
+    if target == "archived":
+        opp.archived_at = at
+    return True
 
 
 def _apply_update(
@@ -928,11 +1339,35 @@ def _apply_update(
     *,
     provisional: bool,
 ) -> None:
+    """Merge one message into an opportunity's canonical fields (SPEC-03 F3, F4).
+
+    Every accepted change and every rejected one writes `field_history`; a rejected change
+    (`applied=False`) is how a locked field or a stale message stays visible instead of silent.
+    """
     c = dict(opp.canonical)
     changes: list[str] = []
+    material = False
+
+    def record(field: str, old: Any, new: Any, *, applied: bool) -> None:
+        session.add(
+            FieldHistory(
+                opportunity_id=opp.id,
+                field=field,
+                old=old,
+                new=new,
+                message_id=msg.id,
+                applied=applied,
+                changed_at=now,
+            )
+        )
+
     for field in ("bid_due", "rfi_deadline", "intent_due"):
+        # Counted before anything is recorded, and only for the field whose summary shows it.
+        prior_moves = _applied_change_count(session, opp.id, field) if field == "bid_due" else 0
         existing_raw = (c.get(field) or {}).get("value")
-        existing = datetime.fromisoformat(existing_raw) if existing_raw else None
+        # `aware()` for the same reason `load_candidates` uses it: a canonical record written by
+        # hand, or before timezones were enforced, would otherwise make the comparison below raise.
+        existing = aware(datetime.fromisoformat(existing_raw)) if existing_raw else None
         incoming = getattr(x, field).value
         set_by_raw = (c.get(field) or {}).get("as_of")
         set_by = aware(datetime.fromisoformat(set_by_raw)) if set_by_raw else None
@@ -943,20 +1378,17 @@ def _apply_update(
             and set_by
             and msg_sent
             and msg_sent < set_by
-            and x.kind.value in ("itb", "addendum", "date_change")
+            and x.kind.value in DATE_MOVERS
         ):
-            session.add(
-                FieldHistory(
-                    opportunity_id=opp.id,
-                    field=field,
-                    old={"value": existing_raw},
-                    new={"value": incoming.isoformat()},
-                    message_id=msg.id,
-                    applied=False,
-                    changed_at=now,
-                )
+            # An older message arriving late must not move a newer date backwards; it is still
+            # recorded, unapplied, so the disagreement is visible.
+            record(
+                field,
+                {"value": existing_raw},
+                {"value": incoming.isoformat()},
+                applied=False,
             )
-            continue  # older message must not move a newer date backwards
+            continue
         out = merge_date(
             existing,
             incoming,
@@ -965,94 +1397,238 @@ def _apply_update(
             field=field,
         )
         if out.changed or out.conflict:
-            session.add(
-                FieldHistory(
-                    opportunity_id=opp.id,
-                    field=field,
-                    old={"value": existing_raw},
-                    new={"value": incoming.isoformat() if incoming else None},
-                    message_id=msg.id,
-                    applied=out.changed,
-                    changed_at=now,
-                )
+            record(
+                field,
+                {"value": existing_raw},
+                {"value": incoming.isoformat() if incoming else None},
+                applied=out.changed,
             )
         if out.changed:
             c[field] = {
                 **getattr(x, field).model_dump(mode="json"),
                 "as_of": (aware(msg.sent_at) or now).isoformat(),
             }
-            changes.append(out.note + (f" ({x.addendum_label})" if x.addendum_label else ""))
+            note = out.note + (f" ({x.addendum_label})" if x.addendum_label else "")
+            if field == "bid_due":
+                note = with_change_count(note, prior_moves + 1)
+                material = material or material_change(old_due=existing, new_due=incoming)
+                _break_snooze_if_due_sooner(session, opp, incoming, now, changes)
+            changes.append(note)
         if out.conflict:
-            opp.flags = list({*opp.flags, "date_conflict"})
+            # `date_conflict` means two sources disagree (SPEC-03 F3, the reminder rule).
+            # A value the estimator locked is a different thing and gets its own flag.
+            locked = field in opp.locked_fields
+            opp.flags = sorted({*opp.flags, "locked_conflict" if locked else "date_conflict"})
             changes.append(out.note)
-    # pre-bid
+
+    # Pre-bid carries a location and a mandatory flag alongside its datetime, so it merges on its own.
     existing_pb = (c.get("prebid") or {}).get("value")
     if (
         x.prebid.value
-        and (not existing_pb or datetime.fromisoformat(existing_pb) != x.prebid.value)
-        and x.kind.value in ("itb", "addendum", "date_change", "prebid_notice")
+        and (not existing_pb or aware(datetime.fromisoformat(existing_pb)) != x.prebid.value)
+        and x.kind.value in DATE_MOVERS
     ):
-        session.add(
-            FieldHistory(
-                opportunity_id=opp.id,
-                field="prebid",
-                old={"value": existing_pb},
-                new={"value": x.prebid.value.isoformat()},
-                message_id=msg.id,
-                applied=True,
-                changed_at=now,
+        if "prebid" in opp.locked_fields:
+            record(
+                "prebid",
+                {"value": existing_pb},
+                {"value": x.prebid.value.isoformat()},
+                applied=False,
             )
-        )
-        c["prebid"] = x.prebid.model_dump(mode="json")
-        changes.append(
-            f"pre-bid {'set' if not existing_pb else 'moved'} to {x.prebid.value:%b %d %I:%M %p}"
-        )
-    # scope and flags: union
-    new_scope = sorted(set(c.get("scope_items") or []) | {s.value for s in x.scope_items})
-    if new_scope != sorted(c.get("scope_items") or []):
-        added = set(new_scope) - set(c.get("scope_items") or [])
-        session.add(
-            FieldHistory(
-                opportunity_id=opp.id,
-                field="scope_items",
-                old={"value": c.get("scope_items")},
-                new={"value": new_scope},
-                message_id=msg.id,
+            opp.flags = sorted({*opp.flags, "locked_conflict"})
+        else:
+            record(
+                "prebid",
+                {"value": existing_pb},
+                {"value": x.prebid.value.isoformat()},
                 applied=True,
-                changed_at=now,
             )
-        )
-        c["scope_items"] = new_scope
-        changes.append("scope adds " + ", ".join(sorted(a.replace("_", " ") for a in added)))
-    opp.flags = sorted(set(opp.flags) | {f.value for f in x.flags})
-    # fill blanks from higher-confidence values
+            c["prebid"] = x.prebid.model_dump(mode="json")
+            changes.append(
+                f"pre-bid {'set' if not existing_pb else 'moved'} to {x.prebid.value:%b %d %I:%M %p}"
+            )
+
+    # Scope is a union across sources; only an addendum that says so in words takes anything out.
+    scope = merge_scope(
+        list(c.get("scope_items") or []),
+        [s.value for s in x.scope_items],
+        changes_described=x.changes_described if x.kind == Kind.addendum else None,
+    )
+    if scope.value != sorted(c.get("scope_items") or []):
+        record("scope_items", {"value": c.get("scope_items")}, {"value": scope.value}, applied=True)
+        c["scope_items"] = scope.value
+        if scope.added:
+            changes.append("scope adds " + ", ".join(a.replace("_", " ") for a in scope.added))
+        if scope.removed:
+            opp.flags = sorted({*opp.flags, "removed_by_addendum"})
+            changes.append(
+                f"{x.addendum_label or 'addendum'} removes "
+                + ", ".join(r.replace("_", " ") for r in scope.removed)
+            )
+
+    # Which channels this solicitation has reached us through. The invite and the GC's own email
+    # are one opportunity, and the digest should still say it arrived both ways (SPEC-03 F1).
+    channels = sorted({*(c.get("delivery_channels") or []), x.delivery_channel.value})
+    if channels != sorted(c.get("delivery_channels") or []):
+        c["delivery_channels"] = channels
+        if len(channels) > 1:
+            changes.append("also arrived via " + x.delivery_channel.value)
+
+    new_flags = sorted(set(opp.flags) | {f.value for f in x.flags})
+    if new_flags != sorted(opp.flags):
+        record("flags", {"value": sorted(opp.flags)}, {"value": new_flags}, applied=True)
+    opp.flags = new_flags
+
+    if x.bid_type != BidType.unknown and x.bid_type.value != c.get("bid_type"):
+        if "bid_type" in opp.locked_fields:
+            record(
+                "bid_type", {"value": c.get("bid_type")}, {"value": x.bid_type.value}, applied=False
+            )
+            opp.flags = sorted({*opp.flags, "locked_conflict"})
+        else:
+            record(
+                "bid_type", {"value": c.get("bid_type")}, {"value": x.bid_type.value}, applied=True
+            )
+            changes.append(f"bid type {c.get('bid_type', 'unknown')} → {x.bid_type.value}")
+            c["bid_type"] = x.bid_type.value
+
+    incoming_size = x.size_signals.model_dump(mode="json")
+    if size_signals_differ(c.get("size_signals"), incoming_size):
+        if "size_signals" in opp.locked_fields:
+            record(
+                "size_signals",
+                {"value": c.get("size_signals")},
+                {"value": incoming_size},
+                applied=False,
+            )
+            opp.flags = sorted({*opp.flags, "locked_conflict"})
+        else:
+            ratio = size_change_ratio(c.get("size_signals"), incoming_size)
+            record(
+                "size_signals",
+                {"value": c.get("size_signals")},
+                {"value": incoming_size},
+                applied=True,
+            )
+            merged_size = {**(c.get("size_signals") or {})}
+            merged_size.update({k: v for k, v in incoming_size.items() if v is not None})
+            c["size_signals"] = merged_size
+            material = material or ratio > MATERIAL_SIZE_RATIO
+            changes.append(f"size restated ({ratio:.0%} change)" if ratio else "size details added")
+
+    # Fill blanks, and let a clearly better-sourced value win; never overwrite a locked field.
     for field in ("project_name", "gc_name", "owner_name", "project_number", "architect_engineer"):
         cur = c.get(field) or {}
         inc = getattr(x, field)
-        if (
-            inc.value
-            and (not cur.get("value") or inc.confidence > cur.get("confidence", 0) + 0.15)
-            and field not in opp.locked_fields
-        ):
+        if not inc.value or inc.value == cur.get("value"):
+            continue
+        better = not cur.get("value") or inc.confidence > cur.get("confidence", 0) + 0.15
+        if field in opp.locked_fields:
+            if better:
+                # SPEC-03 F3: "system saw a different value" — recorded, not applied.
+                record(field, {"value": cur.get("value")}, {"value": inc.value}, applied=False)
+                opp.flags = sorted({*opp.flags, "locked_conflict"})
+            continue
+        if better:
             c[field] = inc.model_dump(mode="json")
-    if x.kind == Kind.addendum:
-        _record_addendum(session, opp, x, msg, now)
-        changes.append(
-            f"{x.addendum_label or 'Addendum'} received"
-            + (f": {x.changes_described[:80]}" if x.changes_described else "")
-        )
-    if x.kind == Kind.award and x.changes_described and "cancel" in x.changes_described.lower():
-        opp.status = "cancelled"
-        changes.append("cancelled by sender")
+
+    if x.kind == Kind.addendum or x.addendum_label or x.addendum_number:
+        # Either an addendum in its own right, or a date change that also carries one — a message
+        # can have both effects (SPEC-03 edge cases). An addendum that names no number at all
+        # still gets a record, under a label derived from its subject.
+        addendum_note = _record_addendum(session, opp, x, msg, now)
+        if addendum_note:
+            changes.append(addendum_note)
+
+    if x.kind == Kind.award:
+        outcome = award_outcome(x.changes_described, x.summary, msg.subject)
+        if outcome and outcome != opp.status:
+            if set_status(session, opp, outcome, at=now, message_id=msg.id):
+                # SPEC-03 edge cases: the outcome is recorded with the message it came from, so an
+                # estimator correcting it can see what the machine read and where.
+                session.add(
+                    Outcome(
+                        opportunity_id=opp.id,
+                        result=outcome,
+                        notes=(x.changes_described or x.summary or msg.subject)[:500],
+                        source_message_id=msg.id,
+                        created_at=now,
+                    )
+                )
+                changes.append(
+                    "cancelled by sender"
+                    if outcome == "cancelled"
+                    else f"marked {outcome} by sender"
+                )
+            else:
+                # Refused by the lifecycle. Say so out loud rather than silently ignoring an
+                # award notice, which is the one message that closes a job out.
+                opp.flags = sorted({*opp.flags, "outcome_conflict"})
+                changes.append(f"sender says {outcome}, but this is {opp.status}; not applied")
+
     if provisional:
-        opp.flags = list({*opp.flags, "possible_duplicate"})
+        opp.flags = sorted({*opp.flags, "possible_duplicate"})
     if changes:
         opp.changed_since_digest = True
+        opp.material_change = opp.material_change or material
         opp.change_summary = "; ".join(changes)
     opp.canonical = c
     opp.normalized_name = normalize_name((c.get("project_name") or {}).get("value"))
     opp.last_activity_at = now
     session.flush()
+
+
+def _applied_change_count(session: Session, opportunity_id: str, field: str) -> int:
+    """How many times this field has already moved."""
+    prior = session.scalar(
+        select(func.count())
+        .select_from(FieldHistory)
+        .where(
+            FieldHistory.opportunity_id == opportunity_id,
+            FieldHistory.field == field,
+            FieldHistory.applied.is_(True),
+        )
+    )
+    return int(prior or 0)
+
+
+def _break_snooze_if_due_sooner(
+    session: Session,
+    opp: Opportunity,
+    new_due: datetime | None,
+    now: datetime,
+    changes: list[str],
+) -> None:
+    """A date that moves in front of a snooze ends the snooze (SPEC-03 edge cases).
+
+    Sleeping through a bid date is the failure this whole system exists to prevent, so the snooze
+    loses and the opportunity goes back on the decision list, flagged so the override is visible.
+    """
+    if opp.status != "snoozed" or new_due is None:
+        return
+    until = aware(opp.snooze_until)
+    if until is None or new_due > until:
+        return
+    if set_status(session, opp, "undecided", at=now):
+        opp.snooze_until = None
+        opp.flags = sorted({*opp.flags, "snooze_overridden"})
+        changes.append("snooze ended early: bid date now falls before the snooze")
+
+
+def archive_stale(session: Session, *, now: datetime, after_days: int = 180) -> int:
+    """Archive opportunities untouched for 180 days that were never bid (SPEC-03 F5)."""
+    cutoff = now - timedelta(days=after_days)
+    archived = 0
+    for opp in session.scalars(
+        select(Opportunity).where(
+            Opportunity.archived_at.is_(None),
+            Opportunity.status.in_(["new", "undecided", "passed", "snoozed", "cancelled"]),
+            Opportunity.last_activity_at < cutoff,
+        )
+    ).all():
+        if set_status(session, opp, "archived", at=now):
+            archived += 1
+    return archived
 
 
 # ---------------------------------------------------------------- scoring

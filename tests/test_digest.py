@@ -48,8 +48,16 @@ def test_sections_and_no_duplicates(now):  # type: ignore[no-untyped-def]
             first_seen_at=now - timedelta(days=5),
             status="passed",
             changed_since_digest=True,
+            material_change=True,
             change_summary="size doubled",
         ),
+        _item(
+            8,
+            first_seen_at=now - timedelta(days=5),
+            status="passed",
+            changed_since_digest=True,
+            change_summary="Addendum 1 received",
+        ),  # passed and changed, but not materially: stays out of the digest (SPEC-03 F5)
         _item(
             5, first_seen_at=now - timedelta(hours=1), score=30, band="likely_pass", bid_due=None
         ),
@@ -77,6 +85,7 @@ def test_sections_and_no_duplicates(now):  # type: ignore[no-untyped-def]
     assert "o1" in ids_decision and "o1" not in ids_new
     assert "o7" in ids_decision  # stale undecided, older than 3 days
     assert ids_new == {"o2", "o5", "o6"}
+    assert "o8" not in ids_new and "o8" not in ids_decision
     assert [i.opportunity_id for i in s.changed] == ["o3"] and [
         i.opportunity_id for i in s.passed_changed
     ] == ["o4"]
@@ -199,3 +208,40 @@ def test_consider_overflow(now):  # type: ignore[no-untyped-def]
     assert (
         len(s.new_by_band["consider"]) == 10 and s.consider_overflow == 5 and s.counts["new"] == 15
     )
+
+
+def test_a_closed_out_job_reaches_the_changed_section(now):  # type: ignore[no-untyped-def]
+    """Cancellations and outcomes must land somewhere: `build_and_send` clears the flag on send.
+
+    SPEC-03's edge case for a cancelled-after-passed job asks for "the Changed section one-liner",
+    and a job that reaches no section at all loses the news permanently.
+    """
+    items = [
+        _item(
+            i,
+            status=status,
+            first_seen_at=now - timedelta(days=5),
+            changed_since_digest=True,
+            change_summary=summary,
+        )
+        for i, (status, summary) in enumerate(
+            [
+                ("cancelled", "cancelled by sender"),
+                ("won", "marked won by sender"),
+                ("lost", "marked lost by sender"),
+            ],
+            start=1,
+        )
+    ]
+    s = assemble(
+        items=items,
+        recipient_id="u1",
+        recipient_name="Casey",
+        recipient_role="chief",
+        now=now,
+        since=now - timedelta(days=1),
+        health=[HealthLine(name="estimating@", status="ok")],
+    )
+    assert {i.opportunity_id for i in s.changed} == {"o1", "o2", "o3"}
+    assert not s.quiet
+    assert "cancelled by sender" in render_text(s)

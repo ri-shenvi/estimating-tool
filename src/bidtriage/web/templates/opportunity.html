@@ -35,6 +35,42 @@
 <form class="inline" method="post" action="/api/opportunities/{{ o.id }}/actions" onsubmit="event.preventDefault();fetch(this.action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'{{ a }}'})}).then(r=>r.ok?location.reload():r.json().then(j=>alert(j.detail)))"><button>{{ a }}</button></form>
 {% endfor %}
 </div>
+{% if duplicates %}
+<div class="card"><h2>Possible duplicates</h2>
+<p><small>Other opportunities that resemble this one, best match {{ '%.2f'|format(duplicates[0][1].score) }}. Nothing here was merged automatically. Merging folds the other one into this one and is reversible for 30 days.</small></p>
+<table><tr><th>Project</th><th>GC</th><th>Status</th><th>Evidence</th><th></th></tr>
+{% for other, ev in duplicates %}
+<tr><td><a href="/opportunities/{{ other.id }}">{{ (other.canonical.project_name or {}).value or 'Untitled' }}</a></td>
+<td>{{ (other.canonical.gc_name or {}).value or '' }}</td><td>{{ other.status }}</td>
+<td>{{ '%.2f'|format(ev.score) }}{% if ev.hard_key %} ({{ ev.hard_key }}){% endif %}{% if ev.notes %} — {{ ev.notes|join('; ') }}{% endif %}</td>
+<td><form class="inline" method="post" action="/api/opportunities/{{ o.id }}/merge" onsubmit="event.preventDefault();fetch(this.action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({victim_id:'{{ other.id }}'})}).then(r=>r.ok?location.reload():r.json().then(j=>alert(j.detail)))"><button>merge into this</button></form></td></tr>
+{% endfor %}
+</table></div>
+{% endif %}
+{% if related %}
+<div class="card"><h2>Related projects</h2>
+<p><small>The same job from a different GC, or an earlier or later bid of it. Kept separate on purpose: different dates, different relationship.</small></p>
+<ul>{% for r in related %}<li><a href="/opportunities/{{ r.id }}">{{ (r.canonical.project_name or {}).value or r.id }}</a> — {{ (r.canonical.gc_name or {}).value or 'GC unknown' }} · due {{ ((r.canonical.bid_due or {}).value or 'unknown')[:10] }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+<div class="card"><h2>Sources</h2>
+{% if 'possible_duplicate' in o.flags %}<p><small>A message below was attached provisionally: the match scored between 0.6 and 0.9. Split it out if it belongs to a different project.</small></p>{% endif %}
+<table><tr><th>Attached</th><th>Role</th><th>From</th><th>Subject</th><th>Match</th><th></th></tr>
+{% for s in sources %}
+<tr><td>{{ s.src.attached_at }}</td><td>{{ s.src.role|replace('_',' ') }}</td><td>{{ s.msg.from_addr if s.msg else '—' }}</td>
+<td>{{ (s.msg.subject if s.msg else '')[:70] }}</td>
+<td>{% if s.src.evidence.get('hard_key') %}{{ s.src.evidence.hard_key }}{% elif s.src.evidence.get('score') %}{{ '%.2f'|format(s.src.evidence.score) }}{% else %}origin{% endif %}{% if s.src.evidence.get('provisional') %} <span class="chip">provisional</span>{% endif %}</td>
+<td>{% if sources|length > 1 %}<form class="inline" method="post" action="/api/opportunities/{{ o.id }}/split" onsubmit="event.preventDefault();fetch(this.action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message_id:'{{ s.src.message_id }}'})}).then(r=>r.ok?location.reload():r.json().then(j=>alert(j.detail)))"><button>split out</button></form>{% endif %}</td></tr>
+{% endfor %}
+</table>
+{% if addenda %}
+<h3>Addenda</h3>
+<table><tr><th>Label</th><th>Received</th><th>Copies</th><th>Summary</th></tr>
+{% for a in addenda %}<tr><td>{{ a.label }}</td><td>{{ a.received_at }}</td><td>{{ a.copies }}</td><td>{{ (a.summary or '')[:120] }}</td></tr>{% endfor %}
+</table>
+{% if 'addendum_gap' in o.flags %}<p><b>Gap:</b> an addendum in the sequence was never received.</p>{% endif %}
+{% endif %}
+</div>
 <div class="card"><h2>History</h2>
 <table><tr><th>When</th><th>Field</th><th>Old</th><th>New</th><th>Applied</th></tr>
 {% for h in history %}<tr><td>{{ h.changed_at }}</td><td>{{ h.field }}</td><td>{{ h.old }}</td><td>{{ h.new }}</td><td>{{ 'yes' if h.applied else 'no (locked)' }}</td></tr>{% endfor %}

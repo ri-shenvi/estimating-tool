@@ -1,17 +1,67 @@
 """Opportunity resolution: dedupe, threading, change tracking (SPEC-03, ADR-008)."""
 
-from bidtriage.resolution.evidence import Candidate, Evidence, Incoming, decide, evidence
-from bidtriage.resolution.merge import DateMergeOutcome, merge_date
-from bidtriage.resolution.normalize import fingerprint, normalize_name
+from bidtriage.resolution.evidence import (
+    AUTO_MERGE,
+    REVIEW,
+    SOLICITATION_KINDS,
+    Candidate,
+    Evidence,
+    Incoming,
+    decide,
+    evidence,
+)
+from bidtriage.resolution.merge import (
+    FIELD_LABELS,
+    TRACKED_FIELDS,
+    DateMergeOutcome,
+    ScopeMergeOutcome,
+    addendum_gaps,
+    award_outcome,
+    gap_detection_enabled,
+    label_for,
+    material_change,
+    merge_date,
+    merge_scope,
+    size_change_ratio,
+    size_signals_differ,
+    states_removal,
+    with_change_count,
+)
+from bidtriage.resolution.normalize import (
+    fingerprint,
+    geohash,
+    name_tokens,
+    normalize_domain,
+    normalize_name,
+)
 
 __all__ = [
-    "normalize_name",
-    "fingerprint",
+    "AUTO_MERGE",
+    "FIELD_LABELS",
+    "REVIEW",
+    "SOLICITATION_KINDS",
+    "TRACKED_FIELDS",
     "Candidate",
-    "Incoming",
-    "Evidence",
-    "evidence",
-    "decide",
-    "merge_date",
     "DateMergeOutcome",
+    "Evidence",
+    "Incoming",
+    "ScopeMergeOutcome",
+    "addendum_gaps",
+    "award_outcome",
+    "decide",
+    "evidence",
+    "fingerprint",
+    "gap_detection_enabled",
+    "label_for",
+    "geohash",
+    "material_change",
+    "merge_date",
+    "merge_scope",
+    "name_tokens",
+    "normalize_domain",
+    "normalize_name",
+    "size_change_ratio",
+    "size_signals_differ",
+    "states_removal",
+    "with_change_count",
 ]

@@ -305,3 +305,95 @@ def test_reextract_requires_a_known_role(client, session):  # type: ignore[no-un
         follow_redirects=False,
     )
     assert r.status_code == 403
+
+
+# ----------------------------------------------------------- SPEC-03 F6 on the review page
+
+
+def _pair(session):  # type: ignore[no-untyped-def]
+    """Two opportunities, the second flagged as a possible duplicate of the first.
+
+    `normalized_name` matters: it is what candidate generation pre-filters on, and resolution
+    always populates it (SPEC-03 technical notes).
+    """
+    _, first = _seed(session)
+    first.normalized_name = "benedum hall"
+    first.canonical = {**first.canonical, "gc_domain": "pjdick.com", "scope_items": []}
+    other = Opportunity(
+        id="opp2",
+        status="new",
+        canonical={
+            "project_name": {"value": "Benedum Hall Lab", "confidence": 0.9},
+            "gc_name": {"value": "PJ Dick", "confidence": 0.9},
+            "gc_domain": "pjdick.com",
+            "bid_due": {"value": "2026-10-16T14:00:00-04:00"},
+            "location": {"city": "Pittsburgh"},
+            "scope_items": [],
+        },
+        normalized_name="benedum hall lab",
+        flags=["possible_duplicate"],
+        first_seen_at=datetime.now(tz=UTC),
+        last_activity_at=datetime.now(tz=UTC),
+    )
+    session.add(other)
+    session.flush()
+    return other
+
+
+def test_review_page_lists_possible_duplicates(client, session):  # type: ignore[no-untyped-def]
+    _pair(session)
+    body = client.get("/").text
+    assert "Needs review" in body and "possible duplicate" in body
+
+
+def test_duplicates_endpoint_ranks_candidates(client, session):  # type: ignore[no-untyped-def]
+    _pair(session)
+    rows = client.get("/api/opportunities/opp2/duplicates").json()
+    assert [r["id"] for r in rows] == ["opp1"]
+    assert 0 < rows[0]["score"] <= 1.0
+    assert client.get("/api/opportunities/nope/duplicates").status_code == 404
+
+
+def test_merge_then_undo_over_the_api(client, session):  # type: ignore[no-untyped-def]
+    _pair(session)
+    r = client.post("/api/opportunities/opp1/merge", json={"victim_id": "opp2"})
+    assert r.status_code == 200, r.text
+    log_id = r.json()["merge_log_id"]
+    assert session.get(Opportunity, "opp2") is None
+    assert [m["id"] for m in client.get("/api/merges").json()] == [log_id]
+    assert client.post(f"/api/merges/{log_id}/undo").status_code == 200
+    assert session.get(Opportunity, "opp2") is not None
+    # A second undo is refused rather than applied twice.
+    assert client.post(f"/api/merges/{log_id}/undo").status_code == 400
+
+
+def test_merge_conflicting_decisions_is_a_409(client, session):  # type: ignore[no-untyped-def]
+    other = _pair(session)
+    session.get(Opportunity, "opp1").status = "bidding"
+    other.status = "passed"
+    session.flush()
+    r = client.post("/api/opportunities/opp1/merge", json={"victim_id": "opp2"})
+    assert r.status_code == 409 and "before merging" in r.json()["detail"]
+    assert session.get(Opportunity, "opp2") is not None
+
+
+def test_merge_unknown_opportunity_is_a_404(client, session):  # type: ignore[no-untyped-def]
+    _seed(session)
+    assert (
+        client.post("/api/opportunities/opp1/merge", json={"victim_id": "nope"}).status_code == 404
+    )
+
+
+def test_split_requires_more_than_one_source(client, session):  # type: ignore[no-untyped-def]
+    _seed(session)
+    assert (
+        client.post("/api/opportunities/opp1/split", json={"message_id": "nope"}).status_code == 404
+    )
+
+
+def test_curation_requires_a_known_role(client, session):  # type: ignore[no-untyped-def]
+    _pair(session)
+    session.get(User, "u1").role = "readonly"
+    session.flush()
+    r = client.post("/api/opportunities/opp1/merge", json={"victim_id": "opp2"})
+    assert r.status_code == 403

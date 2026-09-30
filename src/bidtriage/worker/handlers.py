@@ -226,10 +226,19 @@ def unsnooze(session: Session, payload: dict[str, Any], ctx: Context) -> None:
     for opp in session.scalars(
         select(Opportunity).where(Opportunity.status == "snoozed", Opportunity.snooze_until <= now)
     ).all():
-        opp.status = "undecided"
-        opp.snooze_until = None
-        opp.changed_since_digest = True
-        opp.change_summary = "snooze ended"
+        if pipeline.set_status(session, opp, "undecided", at=now):
+            opp.snooze_until = None
+            opp.changed_since_digest = True
+            opp.change_summary = "snooze ended"
+
+
+def archive_stale(session: Session, payload: dict[str, Any], ctx: Context) -> None:
+    """Retire opportunities nobody bid and nothing touched for 180 days (SPEC-03 F5)."""
+    archived = pipeline.archive_stale(
+        session, now=datetime.now(tz=UTC), after_days=ctx.settings.opportunity_archive_days
+    )
+    if archived:
+        log.info("archived %d stale opportunit%s", archived, "y" if archived == 1 else "ies")
 
 
 def build_and_send_digest(session: Session, payload: dict[str, Any], ctx: Context) -> None:
@@ -283,6 +292,7 @@ def schedule_tick(session: Session, ctx: Context, now: datetime | None = None) -
                 priority=ingest_job.BACKFILL_PRIORITY,
             )
     enqueue(session, "unsnooze", f"unsnooze:{five}", {}, priority=90)
+    enqueue(session, "archive_stale", f"archive_stale:{now.strftime('%Y%m%d')}", {}, priority=97)
     enqueue(
         session,
         "retry_extractions",
@@ -343,5 +353,6 @@ HANDLERS: dict[str, Handler] = {
     "rescore_all": rescore_all,
     "rescore_gc": rescore_gc,
     "unsnooze": unsnooze,
+    "archive_stale": archive_stale,
     "digest": build_and_send_digest,
 }

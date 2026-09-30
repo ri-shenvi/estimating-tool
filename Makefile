@@ -1,4 +1,4 @@
-.PHONY: dev sync test lint type lint-imports check api worker db-up db-revision db-upgrade eval-extraction validate-fixtures calibrate digest-preview seed
+.PHONY: dev sync test test-postgres lint type lint-imports check api worker db-up db-revision db-upgrade eval-extraction validate-fixtures calibrate digest-preview seed
 
 sync:
 	uv sync --all-groups
@@ -8,6 +8,12 @@ dev: sync db-up db-upgrade seed
 
 test:
 	uv run pytest
+
+# The `postgres`-marked tests: JSONB variants, the partial unique index and the pg_trgm candidate
+# search, none of which SQLite can express. Skipped automatically when no server is reachable;
+# point BIDTRIAGE_TEST_POSTGRES_URL elsewhere to use a different one.
+test-postgres:
+	uv run pytest -m postgres -v
 
 lint:
 	uv run ruff check . && uv run ruff format --check .

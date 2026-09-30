@@ -29,6 +29,7 @@ from bidtriage.digest.sender import send_email
 from bidtriage.digest.snapshot import DigestItem, HealthLine, ReviewItem, assemble
 from bidtriage.extraction.schema import KIND_REVIEW_CONFIDENCE
 from bidtriage.ingestion.health import OK, source_health
+from bidtriage.resolution.merge import addendum_gaps, gap_detection_enabled
 from bidtriage.scoring.engine import ScoreResult
 from bidtriage.worker.ingest_job import pending_skips
 
@@ -118,6 +119,9 @@ def load_items(
                 exclusions=c.get("exclusions_text"),
                 addenda_count=len(addenda),
                 addendum_gap="addendum_gap" in o.flags,
+                missing_addenda=addendum_gaps([a.number for a in addenda if a.number is not None])
+                if gap_detection_enabled([a.label for a in addenda])
+                else [],
                 docs_host=docs,
                 score=res.score if res else 0,
                 band=res.band if res else "pass",
@@ -141,6 +145,11 @@ def load_items(
                         "date_conflict",
                         "possible_duplicate",
                         "orphan_update",
+                        "locked_conflict",
+                        "removed_by_addendum",
+                        "snooze_overridden",
+                        "reactivated",
+                        "outcome_conflict",
                     )
                 ],
                 status=o.status,
@@ -148,6 +157,7 @@ def load_items(
                 assignee_name=users.get(o.assignee_user_id or "", None),
                 first_seen_at=aware(o.first_seen_at),
                 changed_since_digest=o.changed_since_digest,
+                material_change=o.material_change,
                 change_summary=o.change_summary,
                 actions=actions,
                 open_url=f"{base_url}/opportunities/{o.id}",
@@ -321,5 +331,6 @@ def build_and_send(
             select(Opportunity).where(Opportunity.changed_since_digest.is_(True))
         ).all():
             o.changed_since_digest = False
+            o.material_change = False
     session.flush()
     return built

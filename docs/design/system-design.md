@@ -111,13 +111,16 @@ gcs(id, canonical_name, kind, tier, tier_reason, tier_set_by, tier_set_at, key_a
 gc_aliases(gc_id, alias)      gc_domains(gc_id, domain)      gc_contacts(id, gc_id, name, email, phone, role, last_seen)
 gc_stats(gc_id, window, invites, bids, submitted, won, hit_rate, avg_days_notice, computed_at)
 
-opportunities(id, status, gc_id, canonical_jsonb, normalized_name, fingerprint, geo point,
+opportunities(id, status, gc_id, canonical_jsonb, normalized_name, fingerprint, geo point, geohash,
               first_seen_at, last_activity_at, assignee_user_id, snooze_until, changed_since_digest,
-              change_summary, flags text[], locked_fields text[], related_project_ids uuid[],
-              archived_at)
+              material_change, change_summary, flags text[], locked_fields text[],
+              related_project_ids uuid[], archived_at)
 opportunity_sources(opportunity_id, message_id, role, attached_at, evidence_jsonb)
-addenda(id, opportunity_id, label, number, message_id, received_at, summary)
+opportunity_keys(opportunity_id, kind, value)   -- hard keys (thread, platform id), denormalized
+addenda(id, opportunity_id, label, number, message_id, received_at, summary, copies)
 field_history(id, opportunity_id, field, old_jsonb, new_jsonb, message_id, user_id, applied, changed_at)
+merge_log(id, kind, survivor_id, other_id, actor_user_id, reason, before_jsonb, created_at,
+          undone_at, undone_by_user_id)   -- manual merge/split, with what undo restores
 
 scoring_profiles(version, json, author_id, note, active, created_at)
 scores(id, opportunity_id, profile_version, score, band, explanation_jsonb, inputs_hash, computed_at)
@@ -140,8 +143,11 @@ calendar_tokens(id, user_id, token_hash, scope, revoked_at)
 
 Indexes: `raw_messages(internet_message_id)`, `raw_messages(content_hash, received_at)`,
 `opportunities USING gin (normalized_name gin_trgm_ops)`, `opportunities(gc_id, status)`,
-`opportunities(status, (canonical_jsonb->>'bid_due'))`, `jobs(status, run_at, priority)`,
-`audit_events(entity_type, entity_id, created_at)`.
+`opportunities(geohash)`, `opportunities(status, (canonical_jsonb->>'bid_due'))`,
+`opportunity_keys(kind, value)`, `jobs(status, run_at, priority)`,
+`audit_events(entity_type, entity_id, created_at)`. The trigram index needs `pg_trgm`; candidate
+generation checks for the extension and falls back to token matching without it, so SQLite and an
+unprivileged PostgreSQL role both work.
 
 ## 5. Module boundaries and contracts
 
@@ -151,7 +157,7 @@ Indexes: `raw_messages(internet_message_id)`, `raw_messages(content_hash, receiv
 | `ingestion` | core | `MailSource` protocol; `poll(source) -> PollResult`; `parse_eml(bytes) -> ParsedMessage`; attachment text; link harvest |
 | `extraction` | core | `Extractor` protocol (`extract(ParsedMessage) -> ExtractedOpportunity`); `ClaudeExtractor`, `FakeExtractor`; `postprocess()` |
 | `gcs` | core | `resolve_gc(name, domains) -> GCMatch`; `recompute_stats(gc_id)` |
-| `resolution` | core, gcs | `normalize_name()`, `find_candidates()`, `evidence()`, `apply(message, extraction) -> ResolutionResult` |
+| `resolution` | core, gcs | `normalize_name()`, `fingerprint()`, `geohash()`, `evidence()`, `decide()`, `merge_date()`, `merge_scope()`, `award_outcome()` — all pure; the session work is `worker/pipeline.resolve_message()` and `worker/curation` |
 | `scoring` | core | `score(OpportunitySnapshot, GCSnapshot, CalendarSnapshot, Profile) -> ScoreResult`; `Profile` schema + defaults |
 | `decisions` | core, scoring, gcs | `apply_action()`, `sign_token()/verify_token()`, state machine, outcomes |
 | `digest` | core, scoring, decisions | `build_snapshot(date, recipient)`, `render_html/text(snapshot)`, `send()` |

@@ -110,5 +110,10 @@ Written but not exercised against live systems: `GraphSource`, `ImapSource`, `Cl
 deployment (see `web/deps.py` and SPEC-09).
 
 Not built yet (specified): profile editor form with preview (SPEC-07 F6; JSON editor exists),
-merge/split on the review page (SPEC-03 F6), outcome prompts in the digest (SPEC-06 F4),
-auto-reply (P1), Teams delivery (P1), retention job, `/metrics`.
+outcome prompts in the digest (SPEC-06 F4), auto-reply (P1), Teams delivery (P1), retention job,
+`/metrics`.
+
+Most tests run on SQLite. The behaviour SQLite cannot express — JSONB, the partial unique index,
+and the `pg_trgm` candidate search — is covered by `make test-postgres`, which skips itself when no
+server is reachable. Point `BIDTRIAGE_TEST_POSTGRES_URL` at any PostgreSQL with `pg_trgm`
+available, or run `make db-up` for the compose service.
