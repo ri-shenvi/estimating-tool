@@ -1,4 +1,4 @@
-.PHONY: dev sync test lint type lint-imports check api worker db-up db-revision db-upgrade eval-extraction calibrate digest-preview seed
+.PHONY: dev sync test lint type lint-imports check api worker db-up db-revision db-upgrade eval-extraction eval-extraction-offline calibrate digest-preview seed
 
 sync:
 	uv sync --all-groups
@@ -40,6 +40,10 @@ seed:
 
 eval-extraction:
 	uv run bidtriage eval-extraction tests/fixtures/messages
+
+# What CI runs: fixtures and post-processing only, no API calls.
+eval-extraction-offline:
+	uv run bidtriage eval-extraction tests/fixtures/messages --offline
 
 calibrate:
 	uv run bidtriage calibrate tests/fixtures/labeled_corpus.csv

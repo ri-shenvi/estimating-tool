@@ -1,0 +1,63 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.93,
+  "project_name": {
+    "value": "Ross Township Fire Station Apparatus Bay Renovation",
+    "confidence": 0.9,
+    "source": "Ross Township fire station apparatus bay renovation",
+    "source_location": "body"
+  },
+  "gc_name": {
+    "value": "Burchick Construction",
+    "confidence": 0.96,
+    "source": "Burchick needs an electrical number",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Lee Burchick",
+      "email": "lee@burchick.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Ross Township",
+    "confidence": 0.85,
+    "source": "Ross Township fire station",
+    "source_location": "body"
+  },
+  "location": {
+    "raw": "1000 Ross Municipal Drive, Pittsburgh, PA 15237",
+    "street": "1000 Ross Municipal Drive",
+    "city": "Pittsburgh",
+    "state": "PA",
+    "postal_code": "15237",
+    "confidence": 0.95,
+    "source": "1000 Ross Municipal Drive, Pittsburgh, PA 15237",
+    "source_location": "body"
+  },
+  "project_type": "government_civic",
+  "project_type_confidence": 0.88,
+  "new_or_renovation": "renovation",
+  "bid_type": "hard_bid",
+  "sector": "public",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "weekday:friday@12:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.85,
+    "source": "Bids due Friday at noon.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "fire_alarm"
+  ],
+  "scope_text": "Scope is branch power, LED lighting, lighting controls and a fire alarm tie-in.",
+  "trade_relevance": "primary",
+  "summary": "Apparatus bay renovation at the Ross Township fire station with Burchick. Branch power, LED lighting, lighting controls and a fire alarm tie-in. Short bid window."
+}

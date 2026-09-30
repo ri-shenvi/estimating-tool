@@ -1,0 +1,60 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.96,
+  "project_name": {
+    "value": "Pittsburgh Distribution Center",
+    "confidence": 0.94,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Turner Construction",
+    "confidence": 0.97,
+    "source": "Turner is soliciting electrical proposals",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Alex Turner",
+      "email": "aturner@tcco.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "location": {
+    "raw": "100 Terminal Way, Pittsburgh, PA 15219",
+    "street": "100 Terminal Way",
+    "city": "Pittsburgh",
+    "state": "PA",
+    "postal_code": "15219",
+    "confidence": 0.96,
+    "source": "100 Terminal Way, Pittsburgh, PA 15219",
+    "source_location": "body"
+  },
+  "project_type": "light_industrial_utility",
+  "project_type_confidence": 0.9,
+  "new_or_renovation": "new",
+  "bid_type": "hard_bid",
+  "sector": "private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-20T14:00:00",
+    "timezone": "America/Chicago",
+    "time_known": true,
+    "confidence": 0.94,
+    "source": "Proposals are due to our Chicago office on October 20 at 2:00 PM CST.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "site_lighting",
+    "fire_alarm",
+    "temporary_power"
+  ],
+  "scope_text": "Scope: 4000A service and distribution, branch power, high-bay LED lighting with controls, site lighting, fire alarm and temporary power.",
+  "trade_relevance": "primary",
+  "summary": "New distribution center in Pittsburgh with Turner. 4000A service, branch power, high-bay LED with controls, site lighting, fire alarm and temporary power. Proposals go to Turner's Chicago office on Central time."
+}

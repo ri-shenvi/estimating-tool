@@ -1,26 +1,129 @@
 {
-  "kind": "itb", "kind_confidence": 0.97,
-  "project_name": {"value": "AHN Wexford MOB Fit-Out", "confidence": 0.96, "source": "subject"},
-  "project_number": {"value": null, "confidence": 0, "source": null},
-  "gc_name": {"value": "Mascaro Construction", "confidence": 0.98, "source": "Mascaro is requesting electrical bids"},
-  "gc_contacts": [{"name": "Bob Builder", "email": "bbuilder@mascaroconstruction.com", "phone": null, "role": null}],
-  "owner_name": {"value": "Allegheny Health Network", "confidence": 0.95, "source": "Allegheny Health Network Wexford Medical Office Building"},
-  "architect_engineer": {"value": null, "confidence": 0, "source": null},
-  "location": {"raw": "12311 Perry Highway, Wexford, PA 15090", "street": "12311 Perry Highway", "city": "Wexford", "state": "PA", "postal_code": "15090", "confidence": 0.97, "source": "at 12311 Perry Highway, Wexford, PA 15090"},
-  "project_type": "healthcare", "project_type_confidence": 0.96, "project_subtype": "medical office fit-out",
-  "new_or_renovation": "tenant_fit_out", "bid_type": "hard_bid", "sector": "private", "delivery_channel": "email",
-  "bid_due": {"value": "2026-10-20T10:00:00", "timezone": null, "time_known": true, "confidence": 0.95, "source": "Bids due 10/20 by 10 AM."},
-  "prebid": {"value": "2026-10-06T13:00:00", "timezone": null, "location": null, "mandatory": false, "confidence": 0.9, "source": "Optional walk-through 10/6 at 1 PM."},
-  "rfi_deadline": {"value": null, "timezone": null, "time_known": false, "confidence": 0, "source": null},
-  "intent_due": {"value": null, "timezone": null, "time_known": false, "confidence": 0, "source": null},
-  "anticipated_start": null, "duration_months": null,
-  "size_signals": {"stated_project_value": null, "stated_electrical_value": 850000, "square_feet": 18500, "stories": null, "units_or_beds": null, "description": "18,500 SF imaging suite and exam rooms", "confidence": 0.95, "source": "Electrical budget is approximately $850,000"},
-  "scope_items": ["service_and_distribution", "branch_power", "lighting", "lighting_controls", "nurse_call", "fire_alarm", "structured_cabling"],
+  "kind": "itb",
+  "kind_confidence": 0.97,
+  "project_name": {
+    "value": "AHN Wexford MOB Fit-Out",
+    "confidence": 0.96,
+    "source": "FW: ITB - AHN Wexford MOB Fit-Out - Electrical",
+    "source_location": "subject"
+  },
+  "project_number": {
+    "value": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "gc_name": {
+    "value": "Mascaro Construction",
+    "confidence": 0.98,
+    "source": "Mascaro is requesting electrical bids",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Bob Builder",
+      "email": "bbuilder@mascaroconstruction.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Allegheny Health Network",
+    "confidence": 0.95,
+    "source": "Allegheny Health Network Wexford Medical Office Building",
+    "source_location": "body"
+  },
+  "architect_engineer": {
+    "value": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "location": {
+    "raw": "12311 Perry Highway, Wexford, PA 15090",
+    "street": "12311 Perry Highway",
+    "city": "Wexford",
+    "state": "PA",
+    "postal_code": "15090",
+    "confidence": 0.97,
+    "source": "at 12311 Perry Highway, Wexford, PA 15090",
+    "source_location": "body"
+  },
+  "project_type": "healthcare",
+  "project_type_confidence": 0.96,
+  "project_subtype": "medical office fit-out",
+  "new_or_renovation": "tenant_fit_out",
+  "bid_type": "hard_bid",
+  "sector": "private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-20T10:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.95,
+    "source": "Bids due 10/20 by 10 AM.",
+    "source_location": "body"
+  },
+  "prebid": {
+    "value": "2026-10-06T13:00:00",
+    "timezone": null,
+    "location": null,
+    "mandatory": false,
+    "confidence": 0.9,
+    "source": "Optional walk-through 10/6 at 1 PM.",
+    "source_location": "body"
+  },
+  "rfi_deadline": {
+    "value": null,
+    "timezone": null,
+    "time_known": false,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "intent_due": {
+    "value": null,
+    "timezone": null,
+    "time_known": false,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "anticipated_start": null,
+  "duration_months": null,
+  "size_signals": {
+    "stated_project_value": null,
+    "stated_electrical_value": 850000,
+    "square_feet": 18500,
+    "stories": null,
+    "units_or_beds": null,
+    "description": "18,500 SF imaging suite and exam rooms",
+    "confidence": 0.95,
+    "source": "Electrical budget is approximately $850,000",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "nurse_call",
+    "fire_alarm",
+    "structured_cabling"
+  ],
   "scope_text": "Scope: distribution, branch power, lighting and controls, nurse call, fire alarm extension, and low-voltage rough-in.",
   "exclusions_text": "Generator connection for imaging by others",
   "flags": [],
-  "document_links": [{"url": "https://mascaro.egnyte.com/fl/AHNWexford", "host_class": "egnyte", "label": "Documents"}],
-  "addendum_label": null, "addendum_number": null, "changes_described": null,
+  "document_links": [
+    {
+      "url": "https://mascaro.egnyte.com/fl/AHNWexford",
+      "host_class": "egnyte",
+      "label": "Documents"
+    }
+  ],
+  "addendum_label": null,
+  "addendum_number": null,
+  "changes_described": null,
   "trade_relevance": "primary",
   "summary": "Second-floor medical office fit-out for AHN in Wexford with Mascaro: distribution, branch power, lighting and controls, nurse call, fire alarm extension and low-voltage rough-in. Generator connection by others. Optional walk-through."
 }

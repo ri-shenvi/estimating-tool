@@ -1,0 +1,74 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.96,
+  "project_name": {
+    "value": "Excela Health Latrobe Endoscopy Suite",
+    "confidence": 0.94,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Landau Building Company",
+    "confidence": 0.97,
+    "source": "Landau Building Company is bidding the Excela Health Latrobe endoscopy suite renovation",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Chris Landau",
+      "email": "clandau@landau-bldg.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Excela Health",
+    "confidence": 0.9,
+    "source": "Excela Health Latrobe endoscopy suite renovation",
+    "source_location": "body"
+  },
+  "location": {
+    "raw": "532 West Second Avenue, Latrobe, PA 15650",
+    "street": "532 West Second Avenue",
+    "city": "Latrobe",
+    "state": "PA",
+    "postal_code": "15650",
+    "confidence": 0.95,
+    "source": "532 West Second Avenue, Latrobe, PA 15650",
+    "source_location": "body"
+  },
+  "project_type": "healthcare",
+  "project_type_confidence": 0.95,
+  "new_or_renovation": "renovation",
+  "bid_type": "hard_bid",
+  "sector": "institutional_private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-22T14:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.96,
+    "source": "Bids due October 22 at 2:00 PM.",
+    "source_location": "body"
+  },
+  "prebid": {
+    "value": "2026-10-08T09:00:00",
+    "timezone": null,
+    "location": "main entrance",
+    "mandatory": false,
+    "confidence": 0.93,
+    "source": "Pre-bid walkthrough optional but strongly encouraged, October 8 at 9:00 AM at the main entrance.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "nurse_call",
+    "fire_alarm",
+    "structured_cabling"
+  ],
+  "scope_text": "Electrical scope: branch power, lighting and controls, nurse call, fire alarm devices and structured cabling.",
+  "trade_relevance": "primary",
+  "summary": "Endoscopy suite renovation for Excela Health in Latrobe with Landau. Branch power, lighting and controls, nurse call, fire alarm devices and cabling in an occupied hospital. Walkthrough is encouraged but not required."
+}

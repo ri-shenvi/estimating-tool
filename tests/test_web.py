@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from bidtriage.core.config import Settings, get_settings
 from bidtriage.core.models import Opportunity, User
@@ -232,3 +232,76 @@ def test_upload_rejects_empty_file(client, session, monkeypatch, tmp_path):  # t
         headers={"X-Dev-User": "casey@example.com"},
     )
     assert r.status_code == 400
+
+
+def _failed_message(session, **kw):  # type: ignore[no-untyped-def]
+    from bidtriage.core.models import RawMessage
+
+    fields = dict(
+        content_hash="h" * 64,
+        from_addr="jdoe@pjdick.com",
+        from_name="Jane Doe",
+        subject="ITB - Benedum Hall Lab Renovation - Electrical",
+        received_at=datetime.now(tz=UTC),
+        created_at=datetime.now(tz=UTC),
+        extraction_status="failed",
+        extraction_attempts=3,
+        extraction_error="error: ConnectionError: anthropic unreachable",
+    )
+    fields.update(kw)
+    msg = RawMessage(**fields)
+    session.add(msg)
+    session.flush()
+    return msg
+
+
+def test_review_page_lists_failed_extractions(client, session):  # type: ignore[no-untyped-def]
+    msg = _failed_message(session)
+    body = client.get("/admin/").text
+    assert "Needs review (1)" in body
+    assert "ITB - Benedum Hall Lab Renovation" in body
+    assert "anthropic unreachable" in body
+    assert f"/admin/messages/{msg.id}/reextract" in body
+
+
+def test_review_page_lists_low_confidence_classifications(client, session):  # type: ignore[no-untyped-def]
+    _failed_message(
+        session,
+        extraction_status="done",
+        extraction_attempts=1,
+        extraction_error=None,
+        kind="itb",
+        kind_confidence=0.41,
+        subject="Scanned ITB - see attached (fax copy)",
+    )
+    body = client.get("/admin/").text
+    assert "Needs review (1)" in body and "0.41" in body
+
+
+def test_reextract_queues_a_job_and_audits_it(client, session):  # type: ignore[no-untyped-def]
+    from bidtriage.core.models import AuditEvent, Job
+
+    msg = _failed_message(session)
+    r = client.post(f"/admin/messages/{msg.id}/reextract", follow_redirects=False)
+    assert r.status_code == 303 and "#review" in r.headers["location"]
+    jobs = session.scalars(select(Job)).all()
+    assert [j.kind for j in jobs] == ["reextract_message"]
+    assert jobs[0].payload == {"message_id": msg.id}
+    actions = [a.action for a in session.scalars(select(AuditEvent)).all()]
+    assert "message.reextract" in actions
+
+
+def test_reextract_unknown_message_is_a_404(client, session):  # type: ignore[no-untyped-def]
+    assert client.post("/admin/messages/nope/reextract").status_code == 404
+
+
+def test_reextract_requires_a_known_role(client, session):  # type: ignore[no-untyped-def]
+    msg = _failed_message(session)
+    session.add(User(id="u9", email="guest@example.com", name="Guest", role="viewer"))
+    session.flush()
+    r = client.post(
+        f"/admin/messages/{msg.id}/reextract",
+        headers={"X-Dev-User": "guest@example.com"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 403

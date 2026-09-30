@@ -5,12 +5,13 @@ Each step is a function over a Session so the worker, the CLI and tests share on
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -34,10 +35,22 @@ from bidtriage.core.models import (
     ScoringProfile,
     User,
 )
+from bidtriage.extraction.geocode import Geocoder, apply_geocode
 from bidtriage.extraction.postprocess import PLATFORM_DOMAINS
 from bidtriage.extraction.prefilter import obviously_not_bid
-from bidtriage.extraction.protocol import AttachmentText, ExtractionInput, Extractor
-from bidtriage.extraction.schema import EXTRACTABLE_KINDS, ExtractedOpportunity, Kind
+from bidtriage.extraction.prompts import PROMPT_VERSION
+from bidtriage.extraction.protocol import (
+    AttachmentText,
+    ExtractionInput,
+    Extractor,
+    error_category,
+)
+from bidtriage.extraction.schema import (
+    EXTRACTABLE_KINDS,
+    KIND_REVIEW_CONFIDENCE,
+    ExtractedOpportunity,
+    Kind,
+)
 from bidtriage.gcs.resolve import GCRecord, resolve_gc
 from bidtriage.ingestion.attachments import (
     OVERSIZE_BYTES,
@@ -56,6 +69,8 @@ from bidtriage.resolution.normalize import fingerprint, normalize_domain, normal
 from bidtriage.scoring.engine import ScoreResult, score
 from bidtriage.scoring.profile import DEFAULT_PROFILE, Profile
 from bidtriage.scoring.snapshot import CalendarSnapshot, GCSnapshot, OpportunitySnapshot
+
+log = logging.getLogger("bidtriage.pipeline")
 
 # ---------------------------------------------------------------- ingestion
 
@@ -402,26 +417,99 @@ def extract_message(
     *,
     external_ref: str | None = None,
     clock: Clock | None = None,
+    geocoder: Geocoder | None = None,
+    attempt: int = 1,
+    max_attempts: int = 3,
+    force: bool = False,
 ) -> Extraction | None:
+    """Classify and extract one message (SPEC-02).
+
+    Returns None when the pre-filter skipped the LLM. On failure the message is left `retrying`
+    until `attempt` reaches `max_attempts`, then `failed` — which is what puts it in the digest's
+    Needs review list instead of losing it. The caller is expected to re-raise for the retry, so
+    this records the state and lets the exception through.
+    """
     clock = clock or SystemClock()
     item = build_extraction_input(session, msg, external_ref=external_ref)
-    if obviously_not_bid(item):
+    if not force and obviously_not_bid(item):
         msg.kind, msg.kind_confidence, msg.extraction_status = Kind.not_bid.value, 0.99, "skipped"
         session.flush()
         return None
     try:
         result = extractor.extract(item)
-    except Exception as e:  # noqa: BLE001
-        msg.extraction_status = "failed"
+    except Exception as e:
+        category = error_category(e)
+        # Counts every try ever made, across retry rounds — `attempt` only counts this job's, and
+        # a re-queued message starts a fresh job at attempt 1.
+        msg.extraction_attempts += 1
+        msg.extraction_error = f"{category}: {type(e).__name__}: {e}"[:400]
+        msg.extraction_status = "failed" if attempt >= max_attempts else "retrying"
         session.flush()
-        raise e
+        log.warning(
+            "extraction %s message=%s attempt=%d/%d category=%s: %s",
+            msg.extraction_status,
+            msg.id,
+            attempt,
+            max_attempts,
+            category,
+            e,
+        )
+        raise
+    result.location = apply_geocode(result.location, geocoder)
+    return _record_extraction(session, msg, result, clock=clock)
+
+
+def reextract_message(
+    session: Session,
+    msg: RawMessage,
+    extractor: Extractor,
+    *,
+    external_ref: str | None = None,
+    clock: Clock | None = None,
+    geocoder: Geocoder | None = None,
+    attempt: int = 1,
+    max_attempts: int = 3,
+) -> Extraction | None:
+    """Re-run extraction, keeping the previous record and pointing it at the new one (SPEC-02 F4).
+
+    The pre-filter is bypassed: a re-extraction is either an estimator overriding the machine or a
+    prompt fix being applied, and both mean "look again".
+    """
+    return extract_message(
+        session,
+        msg,
+        extractor,
+        external_ref=external_ref,
+        clock=clock,
+        geocoder=geocoder,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        force=True,
+    )
+
+
+def latest_extraction(session: Session, message_id: str) -> Extraction | None:
+    return session.scalars(
+        select(Extraction)
+        .where(Extraction.message_id == message_id, Extraction.superseded_by.is_(None))
+        .order_by(Extraction.version.desc(), Extraction.created_at.desc())
+    ).first()
+
+
+def _record_extraction(
+    session: Session, msg: RawMessage, result: ExtractedOpportunity, *, clock: Clock
+) -> Extraction:
+    previous = latest_extraction(session, msg.id)
     msg.kind, msg.kind_confidence, msg.extraction_status = (
         result.kind.value,
         result.kind_confidence,
         "done",
     )
+    msg.extraction_attempts += 1
+    msg.extraction_error = None
     ext = Extraction(
         message_id=msg.id,
+        version=(previous.version + 1) if previous is not None else 1,
         model=result.extraction_meta.model,
         prompt_version=result.extraction_meta.prompt_version,
         payload=result.model_dump(mode="json"),
@@ -432,6 +520,9 @@ def extract_message(
     )
     session.add(ext)
     session.flush()
+    if previous is not None:
+        previous.superseded_by = ext.id
+        session.flush()
     if result.kind in EXTRACTABLE_KINDS:
         enqueue(
             session,
@@ -441,6 +532,118 @@ def extract_message(
             clock=clock,
         )
     return ext
+
+
+def messages_needing_review(session: Session, *, limit: int = 100) -> list[RawMessage]:
+    """Messages an estimator should look at: extraction failures and shaky classifications.
+
+    SPEC-02 F1 and F3. A low-confidence kind is still processed as its best guess; it appears here
+    so the guess can be corrected, not because anything was dropped.
+    """
+    return list(
+        session.scalars(
+            select(RawMessage)
+            .where(
+                or_(
+                    RawMessage.extraction_status.in_(("failed", "retrying")),
+                    and_(
+                        RawMessage.extraction_status == "done",
+                        RawMessage.kind_confidence < KIND_REVIEW_CONFIDENCE,
+                    ),
+                )
+            )
+            .order_by(RawMessage.received_at.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+RETRY_PRIORITY = 120
+REEXTRACT_PRIORITY = 900
+
+
+def external_ref_for(session: Session, msg: RawMessage) -> str | None:
+    """Fixture stem for the offline extractor; None for anything ingested from a real mailbox."""
+    link = session.scalar(select(MessageSource).where(MessageSource.message_id == msg.id))
+    if link and link.provider_message_id.endswith(".eml"):
+        return link.provider_message_id.rsplit(".", 1)[0]
+    return None
+
+
+def enqueue_extraction_retries(
+    session: Session, *, clock: Clock | None = None, max_rounds: int = 24
+) -> int:
+    """Re-queue messages whose extraction failed, so an outage heals itself (SPEC-02 F3).
+
+    Refusals are left alone: a policy decline is not an outage, and re-sending the same message
+    hourly would only burn tokens. Re-extraction from the review page still works on them.
+    """
+    clock = clock or SystemClock()
+    now = clock.now()
+    bucket = now.strftime("%Y%m%d%H")
+    queued = 0
+    for msg in session.scalars(
+        select(RawMessage).where(
+            RawMessage.extraction_status == "failed",
+            RawMessage.extraction_attempts < max_rounds,
+        )
+    ).all():
+        if (msg.extraction_error or "").startswith("refusal"):
+            continue
+        if (
+            enqueue(
+                session,
+                "extract_message",
+                f"extract:{msg.id}:retry:{bucket}",
+                {"message_id": msg.id},
+                priority=RETRY_PRIORITY,
+                clock=clock,
+            )
+            is not None
+        ):
+            queued += 1
+    return queued
+
+
+def enqueue_stale_prompt_reextractions(
+    session: Session,
+    *,
+    clock: Clock | None = None,
+    prompt_version: str = PROMPT_VERSION,
+    window_days: int = 30,
+    limit: int = 200,
+) -> int:
+    """Re-extract recent messages left on an older prompt version (SPEC-02 F4).
+
+    Background and lowest priority: a prompt bump must never delay today's mail.
+    """
+    clock = clock or SystemClock()
+    now = clock.now()
+    cutoff = now - timedelta(days=window_days)
+    queued = 0
+    for msg in session.scalars(
+        select(RawMessage)
+        .where(RawMessage.extraction_status == "done", RawMessage.received_at >= cutoff)
+        .order_by(RawMessage.received_at.desc())
+    ).all():
+        ext = latest_extraction(session, msg.id)
+        if ext is None or ext.prompt_version == prompt_version:
+            continue
+        if (
+            enqueue(
+                session,
+                "reextract_message",
+                f"reextract:{msg.id}:{prompt_version}",
+                {"message_id": msg.id},
+                priority=REEXTRACT_PRIORITY,
+                clock=clock,
+            )
+            is not None
+        ):
+            queued += 1
+        if queued >= limit:
+            break
+    return queued
 
 
 # ---------------------------------------------------------------- resolution
@@ -512,6 +715,17 @@ def resolve_message(
         else []
     )
     gc_match = resolve_gc(x.gc_name.value, contact_domains, _gc_records(session))
+    # SPEC-02 F3: the directory has the last word on the GC's name. A domain match beats what the
+    # letterhead said — or did not say, when the signature block was an image.
+    if gc_match.gc is not None and normalize_name(x.gc_name.value or "") != normalize_name(
+        gc_match.gc.canonical_name
+    ):
+        x.gc_name = x.gc_name.model_copy(
+            update={
+                "value": gc_match.gc.canonical_name,
+                "confidence": max(x.gc_name.confidence, gc_match.confidence),
+            }
+        )
     gc_id = gc_match.gc.id if gc_match.gc else None
     if gc_id is None and x.gc_name.value:
         gc = GC(
@@ -529,8 +743,10 @@ def resolve_message(
         None,
     )
 
-    lat = lon = None
-    if geocoder is not None and x.location.raw:
+    # SPEC-02 F3 geocodes at extraction time; the callable is a fallback for records that
+    # predate it (or tests that inject one directly).
+    lat, lon = x.location.lat, x.location.lon
+    if lat is None and geocoder is not None and x.location.raw:
         geo = geocoder(x.location.raw)
         if geo:
             lat, lon = geo

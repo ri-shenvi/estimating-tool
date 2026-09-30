@@ -1,0 +1,46 @@
+{
+  "kind": "date_change",
+  "kind_confidence": 0.96,
+  "project_name": {
+    "value": "UPMC Passavant Cath Lab Renovation",
+    "confidence": 0.95,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Continental Building Company",
+    "confidence": 0.94,
+    "source": "Morgan Reed posted correspondence",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Morgan Reed",
+      "email": null,
+      "phone": null,
+      "role": null
+    }
+  ],
+  "project_type": "healthcare",
+  "project_type_confidence": 0.8,
+  "new_or_renovation": "renovation",
+  "delivery_channel": "procore",
+  "bid_due": {
+    "value": "2026-10-21T14:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.97,
+    "source": "The bid due date has been extended to October 21 at 2:00 PM.",
+    "source_location": "body"
+  },
+  "changes_described": "The bid due date has been extended to October 21 at 2:00 PM. All other requirements are unchanged.",
+  "document_links": [
+    {
+      "url": "https://app.procore.com/2318842/bidding/packages/9912",
+      "host_class": "procore",
+      "label": "View bid package"
+    }
+  ],
+  "trade_relevance": "primary",
+  "summary": "Continental moved the bid date on the UPMC Passavant cath lab renovation; nothing else changed."
+}

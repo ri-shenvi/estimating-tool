@@ -1,0 +1,60 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.94,
+  "project_name": {
+    "value": "Millvale Community Center",
+    "confidence": 0.93,
+    "source": "Millvale Community Center addition",
+    "source_location": "body"
+  },
+  "gc_name": {
+    "value": "Sota Construction Services",
+    "confidence": 0.96,
+    "source": "Sota Construction Services is assembling a design-build team",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Sasha Ota",
+      "email": "sota@sotaconstruction.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "location": {
+    "raw": "416 Lincoln Avenue, Millvale, PA 15209",
+    "street": "416 Lincoln Avenue",
+    "city": "Millvale",
+    "state": "PA",
+    "postal_code": "15209",
+    "confidence": 0.95,
+    "source": "416 Lincoln Avenue, Millvale, PA 15209",
+    "source_location": "body"
+  },
+  "project_type": "government_civic",
+  "project_type_confidence": 0.85,
+  "new_or_renovation": "addition",
+  "bid_type": "design_build",
+  "sector": "public",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-28T16:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.95,
+    "source": "Proposals due October 28 at 4:00 PM.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "design_build_engineering",
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "solar_pv",
+    "fire_alarm"
+  ],
+  "scope_text": "Design-build electrical; engineer of record to be provided by EC. Scope includes service and distribution, branch power, lighting and controls, solar PV rough-in and fire alarm.",
+  "trade_relevance": "primary",
+  "summary": "Design-build community center addition in Millvale with Sota. The electrical contractor carries the engineer of record. Service and distribution, branch power, lighting and controls, solar PV rough-in and fire alarm."
+}

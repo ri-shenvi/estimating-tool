@@ -1,0 +1,59 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.93,
+  "project_name": {
+    "value": "Bakery Square Building 4",
+    "confidence": 0.93,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": null,
+    "confidence": 0.0,
+    "source": null,
+    "source_location": null
+  },
+  "gc_contacts": [
+    {
+      "name": "Robin Estimating",
+      "email": "restimating@mascaroconstruction.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "location": {
+    "raw": "6425 Penn Avenue, Pittsburgh, PA 15206",
+    "street": "6425 Penn Avenue",
+    "city": "Pittsburgh",
+    "state": "PA",
+    "postal_code": "15206",
+    "confidence": 0.95,
+    "source": "6425 Penn Avenue, Pittsburgh, PA 15206",
+    "source_location": "body"
+  },
+  "project_type": "commercial_office",
+  "project_type_confidence": 0.9,
+  "new_or_renovation": "new",
+  "bid_type": "hard_bid",
+  "sector": "private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-22T14:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.95,
+    "source": "Bids due October 22 at 2:00 PM.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "site_lighting",
+    "fire_alarm",
+    "temporary_power"
+  ],
+  "scope_text": "Scope: 3000A service and distribution, branch power, garage and site lighting, fire alarm and temporary power.",
+  "trade_relevance": "primary",
+  "summary": "Core and shell electrical for Bakery Square Building 4. 3000A service and distribution, branch power, garage and site lighting, fire alarm and temporary power. The sender's company appears only in an image signature."
+}

@@ -1,0 +1,73 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.95,
+  "project_name": {
+    "value": "Moon Area School District Natatorium Renovation",
+    "confidence": 0.94,
+    "source": "Moon Area School District natatorium renovation",
+    "source_location": "body"
+  },
+  "gc_name": {
+    "value": "Moon Area School District",
+    "confidence": 0.9,
+    "source": "Sealed bids will be received by the Moon Area School District",
+    "source_location": "body"
+  },
+  "owner_name": {
+    "value": "Moon Area School District",
+    "confidence": 0.95,
+    "source": "Sealed bids will be received by the Moon Area School District",
+    "source_location": "body"
+  },
+  "location": {
+    "raw": "8353 University Boulevard, Moon Township, PA 15108",
+    "street": "8353 University Boulevard",
+    "city": "Moon Township",
+    "state": "PA",
+    "postal_code": "15108",
+    "confidence": 0.94,
+    "source": "8353 University Boulevard, Moon Township, PA 15108",
+    "source_location": "body"
+  },
+  "project_type": "k12_education",
+  "project_type_confidence": 0.95,
+  "new_or_renovation": "renovation",
+  "bid_type": "hard_bid",
+  "sector": "public",
+  "delivery_channel": "public_notice",
+  "bid_due": {
+    "value": "2026-10-27T14:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.96,
+    "source": "until 2:00 PM prevailing time on October 27, 2026",
+    "source_location": "body"
+  },
+  "prebid": {
+    "value": "2026-10-13T10:00:00",
+    "timezone": null,
+    "location": "the natatorium",
+    "mandatory": true,
+    "confidence": 0.96,
+    "source": "A mandatory pre-bid conference will be held October 13, 2026 at 10:00 AM at the natatorium.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "fire_alarm"
+  ],
+  "scope_text": "for General, HVAC, Plumbing and Electrical prime contracts for the Moon Area School District natatorium renovation",
+  "flags": [
+    "sealed_bid",
+    "prevailing_wage",
+    "bid_bond",
+    "pp_bond",
+    "mbe_wbe_goals",
+    "mandatory_prebid"
+  ],
+  "trade_relevance": "primary",
+  "summary": "Public advertisement for the Moon Area School District natatorium renovation, bid as separate prime contracts including electrical. Sealed public opening, prevailing wage, bid and performance bonds, MBE/WBE goals and a mandatory pre-bid conference."
+}

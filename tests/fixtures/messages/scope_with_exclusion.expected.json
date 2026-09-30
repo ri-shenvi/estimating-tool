@@ -1,0 +1,65 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.96,
+  "project_name": {
+    "value": "Allegheny County Airport Terminal Fit-Out",
+    "confidence": 0.94,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "dck worldwide",
+    "confidence": 0.96,
+    "source": "dck worldwide is soliciting bids",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Drew Kerr",
+      "email": "dkerr@dckww.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Allegheny County",
+    "confidence": 0.85,
+    "source": "Allegheny County Airport terminal fit-out",
+    "source_location": "body"
+  },
+  "location": {
+    "raw": "17 Lebanon Church Road, West Mifflin, PA 15122",
+    "street": "17 Lebanon Church Road",
+    "city": "West Mifflin",
+    "state": "PA",
+    "postal_code": "15122",
+    "confidence": 0.95,
+    "source": "17 Lebanon Church Road, West Mifflin, PA 15122",
+    "source_location": "body"
+  },
+  "project_type": "parking_transportation",
+  "project_type_confidence": 0.85,
+  "new_or_renovation": "tenant_fit_out",
+  "bid_type": "hard_bid",
+  "sector": "public",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-21T10:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.96,
+    "source": "Bids due October 21 at 10:00 AM.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "fire_alarm",
+    "structured_cabling"
+  ],
+  "scope_text": "Scope of work: Electrical, Fire Alarm, and Tele/Data. Security by Owner.",
+  "exclusions_text": "Security by Owner",
+  "trade_relevance": "primary",
+  "summary": "Airport terminal fit-out with dck worldwide. Electrical, fire alarm and tele/data are in the package; security is by the owner."
+}

@@ -1,0 +1,36 @@
+{
+  "kind": "award",
+  "kind_confidence": 0.9,
+  "project_name": {
+    "value": "Cranberry Twp Municipal Building",
+    "confidence": 0.92,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Volpatt Construction",
+    "confidence": 0.96,
+    "source": "Volpatt Construction",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Val Volpatt",
+      "email": "vvolpatt@volpatt.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Cranberry Township",
+    "confidence": 0.85,
+    "source": "The township has pulled the funding",
+    "source_location": "body"
+  },
+  "project_type": "government_civic",
+  "project_type_confidence": 0.8,
+  "delivery_channel": "email",
+  "changes_described": "cancelled",
+  "trade_relevance": "none",
+  "summary": "Volpatt cancelled the Cranberry Township municipal building solicitation; the township pulled this year's funding and will re-advertise in the spring."
+}

@@ -8,6 +8,7 @@ Anthropic's recommended fallback model inside the same request.
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime
 from typing import Any, cast
@@ -16,17 +17,15 @@ import anthropic
 
 from bidtriage.extraction.postprocess import postprocess
 from bidtriage.extraction.prompts import PROMPT_VERSION, system_prompt
-from bidtriage.extraction.protocol import ExtractionInput
+from bidtriage.extraction.protocol import ExtractionInput, ExtractionRefusedError
 from bidtriage.extraction.schema import ExtractedOpportunity, ExtractionMeta, LLMExtraction
+
+log = logging.getLogger("bidtriage.extraction")
 
 ATTACHMENT_CHAR_CAP = 12_000
 MAX_ATTACHMENTS = 4
 BODY_CHAR_CAP = 20_000
 _PRIORITY_WORDS = ("itb", "invitation", "scope", "bid form", "bid-form", "addend", "bulletin")
-
-
-class ExtractionRefusedError(RuntimeError):
-    pass
 
 
 def _prioritize(attachments):
@@ -40,8 +39,12 @@ def _prioritize(attachments):
 
 
 def build_user_content(item: ExtractionInput) -> tuple[str, bool]:
-    """Render the message as delimited data. Returns (text, truncated_any)."""
-    truncated = False
+    """Render the message as delimited data. Returns (text, attachments_truncated).
+
+    Attachment text arrives with `[page N]` markers from the PDF reader, which is what lets the
+    model cite `attachment:<name>:p<page>` in `source_location`.
+    """
+    attachments_truncated = False
     parts = [
         "<message>",
         f"<sent_at>{item.sent_at.isoformat()}</sent_at>",
@@ -52,7 +55,6 @@ def build_user_content(item: ExtractionInput) -> tuple[str, bool]:
     body = item.body
     if len(body) > BODY_CHAR_CAP:
         body = body[: BODY_CHAR_CAP // 2] + "\n[...truncated...]\n" + body[-BODY_CHAR_CAP // 2 :]
-        truncated = True
     parts.append(f"<body>\n{body}\n</body>")
     if item.links:
         parts.append("<links>\n" + "\n".join(item.links[:50]) + "\n</links>")
@@ -64,7 +66,7 @@ def build_user_content(item: ExtractionInput) -> tuple[str, bool]:
                 + "\n[...truncated...]\n"
                 + text[-ATTACHMENT_CHAR_CAP // 3 :]
             )
-            truncated = True
+            attachments_truncated = True
         parts.append(f'<attachment name="{a.filename}">\n{text}\n</attachment>')
     skipped = [a.filename for a in item.attachments if a.large_document]
     if skipped:
@@ -74,7 +76,7 @@ def build_user_content(item: ExtractionInput) -> tuple[str, bool]:
             + "</large_documents_not_included>"
         )
     parts.append("</message>")
-    return "\n".join(parts), truncated
+    return "\n".join(parts), attachments_truncated
 
 
 class ClaudeExtractor:
@@ -116,7 +118,9 @@ class ClaudeExtractor:
         )
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
-            raise ExtractionRefusedError(f"refused: {getattr(details, 'category', None)}")
+            category = getattr(details, "category", None)
+            log.warning("extraction refused model=%s category=%s", self.model, category)
+            raise ExtractionRefusedError(f"refused: {category}")
         llm = response.parsed_output
         if llm is None:
             raise RuntimeError("structured output missing parsed_output")

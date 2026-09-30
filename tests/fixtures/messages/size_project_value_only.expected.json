@@ -1,0 +1,70 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.96,
+  "project_name": {
+    "value": "Strip District Office Building",
+    "confidence": 0.93,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Rycon Construction",
+    "confidence": 0.97,
+    "source": "Rycon Construction invites your electrical proposal",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Dana Rycon",
+      "email": "drycon@ryconinc.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "location": {
+    "raw": "2100 Smallman Street, Pittsburgh, PA 15222",
+    "street": "2100 Smallman Street",
+    "city": "Pittsburgh",
+    "state": "PA",
+    "postal_code": "15222",
+    "confidence": 0.96,
+    "source": "2100 Smallman Street, Pittsburgh, PA 15222",
+    "source_location": "body"
+  },
+  "project_type": "commercial_office",
+  "project_type_confidence": 0.95,
+  "new_or_renovation": "new",
+  "bid_type": "hard_bid",
+  "sector": "private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-23T14:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.96,
+    "source": "Bids due October 23 at 2:00 PM.",
+    "source_location": "body"
+  },
+  "size_signals": {
+    "stated_project_value": 12000000,
+    "stated_electrical_value": null,
+    "square_feet": null,
+    "stories": null,
+    "units_or_beds": null,
+    "description": null,
+    "confidence": 0.95,
+    "source": "$12M total construction",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "fire_alarm",
+    "structured_cabling"
+  ],
+  "scope_text": "Scope: service and distribution, branch power, lighting and lighting controls, fire alarm and structured cabling.",
+  "trade_relevance": "primary",
+  "summary": "New office building in the Strip District with Rycon. Service and distribution, branch power, lighting and controls, fire alarm and cabling. Only the total construction value is stated."
+}

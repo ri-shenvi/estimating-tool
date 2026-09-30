@@ -71,7 +71,8 @@ uv run bidtriage worker         # terminal 2 (add --fake-fixtures tests/fixtures
 | `bidtriage ingest-metrics` | Poll success rate, ingestion lag p50/p95, attachment and duplicate counts |
 | `bidtriage ingest-skips` | Messages ingestion gave up on, so a gap is never silent |
 | `bidtriage digest-preview` | Build the digest without sending |
-| `bidtriage eval-extraction tests/fixtures/messages [--offline]` | Per-field extraction accuracy against `.expected.json` |
+| `bidtriage eval-extraction tests/fixtures/messages [--offline]` | Per-field extraction accuracy against `.expected.json`; fails on the SPEC-02 gates |
+| `bidtriage reextract [MESSAGE_ID]` | Re-extract one message, or queue every recent message left on an older prompt version |
 | `bidtriage calibrate labeled.csv` | Precision/recall of the Bid band against the chief estimator's labels |
 
 ## Repository layout
@@ -104,9 +105,9 @@ scoring with explanations, digest assembly and rendering, signed action links wi
 safety, state machine and audit, ICS feed, job queue semantics, seed GC directory, web routes.
 
 Written but not exercised against live systems: `GraphSource`, `ImapSource`, `ClaudeExtractor`,
-SMTP sending. Authentication is a dev-mode shim; Entra ID OIDC must be wired before any non-dev
+`NominatimGeocoder`, SMTP sending. Authentication is a dev-mode shim; Entra ID OIDC must be wired before any non-dev
 deployment (see `web/deps.py` and SPEC-09).
 
 Not built yet (specified): profile editor form with preview (SPEC-07 F6; JSON editor exists),
-review queue page with merge/split (SPEC-03 F6), outcome prompts in the digest (SPEC-06 F4),
+merge/split on the review page (SPEC-03 F6), outcome prompts in the digest (SPEC-06 F4),
 auto-reply (P1), Teams delivery (P1), retention job, `/metrics`.

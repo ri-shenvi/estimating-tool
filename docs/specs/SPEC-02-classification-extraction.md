@@ -1,6 +1,6 @@
 # SPEC-02: Message Classification and Opportunity Extraction
 
-**Status:** Draft · **Priority:** P0 · **Depends on:** SPEC-01 · **Feeds:** SPEC-03, SPEC-04, SPEC-05
+**Status:** Implemented · **Priority:** P0 · **Depends on:** SPEC-01 · **Feeds:** SPEC-03, SPEC-04, SPEC-05
 
 ## Problem
 
@@ -117,18 +117,18 @@ ExtractedOpportunity
 
 ## Acceptance Criteria
 
-- [ ] Given a BuildingConnected invitation email from "Jane Doe (PJ Dick)" via `team@buildingconnected.com`, when extracted, then `gc_name="PJ Dick"`, `delivery_channel=buildingconnected`, and the sender address is not used as a contact email.
-- [ ] Given a GC email whose body says "Bids are due Thursday, October 16th at 2 PM" sent on 2026-09-30, when extracted, then `bid_due.datetime = 2026-10-16T14:00-04:00`, `time_known=true`, and `source` contains the quoted sentence.
-- [ ] Given a body that says only "bids due 10/16", when extracted, then the date is 2026-10-16, `time_known=false`, confidence ≤ 0.8.
-- [ ] Given a PDF letter with "MANDATORY pre-bid conference: Tuesday, October 7, 2026 at 10:00 AM, at the site", when extracted, then `prebid.mandatory=true` and `flags` contains `mandatory_prebid`.
-- [ ] Given the subject "ADDENDUM #2 – Allegheny Health Network – Wexford MOB", when classified, then `kind=addendum`, `addendum_number=2`.
-- [ ] Given a Procore correspondence "The bid due date has been extended to October 21 at 2:00 PM", when classified, then `kind=date_change`, `bid_due` is 2026-10-21T14:00 and `changes_described` quotes the sentence.
-- [ ] Given a public advertisement listing "General, HVAC, Plumbing and Electrical prime contracts", when extracted, then `sector=public`, `bid_type=hard_bid`, `flags` contains `prevailing_wage` if stated and `sealed_bid`, and `trade_relevance=primary`.
-- [ ] Given a "Roofing bid package" ITB, when extracted, then `kind=itb`, `trade_relevance=none`.
-- [ ] Given a message whose body is empty and whose only content is an attached ITB PDF, when extracted, then all fields come from the attachment and each `source.location` starts with `attachment:`.
-- [ ] Given a vendor newsletter from a lighting rep, when classified, then `kind=not_bid` and no extraction is run.
-- [ ] Given an API outage, when extraction fails 3 times, then the message is marked `extraction_failed`, appears in the next digest's Needs review, and is retried automatically when the API recovers.
-- [ ] Given the same message extracted twice with the same prompt version, then the two records are field-for-field identical except `extraction_meta`.
+- [x] Given a BuildingConnected invitation email from "Jane Doe (PJ Dick)" via `team@buildingconnected.com`, when extracted, then `gc_name="PJ Dick"`, `delivery_channel=buildingconnected`, and the sender address is not used as a contact email.
+- [x] Given a GC email whose body says "Bids are due Thursday, October 16th at 2 PM" sent on 2026-09-30, when extracted, then `bid_due.datetime = 2026-10-16T14:00-04:00`, `time_known=true`, and `source` contains the quoted sentence.
+- [x] Given a body that says only "bids due 10/16", when extracted, then the date is 2026-10-16, `time_known=false`, confidence ≤ 0.8.
+- [x] Given a PDF letter with "MANDATORY pre-bid conference: Tuesday, October 7, 2026 at 10:00 AM, at the site", when extracted, then `prebid.mandatory=true` and `flags` contains `mandatory_prebid`.
+- [x] Given the subject "ADDENDUM #2 – Allegheny Health Network – Wexford MOB", when classified, then `kind=addendum`, `addendum_number=2`.
+- [x] Given a Procore correspondence "The bid due date has been extended to October 21 at 2:00 PM", when classified, then `kind=date_change`, `bid_due` is 2026-10-21T14:00 and `changes_described` quotes the sentence.
+- [x] Given a public advertisement listing "General, HVAC, Plumbing and Electrical prime contracts", when extracted, then `sector=public`, `bid_type=hard_bid`, `flags` contains `prevailing_wage` if stated and `sealed_bid`, and `trade_relevance=primary`.
+- [x] Given a "Roofing bid package" ITB, when extracted, then `kind=itb`, `trade_relevance=none`.
+- [x] Given a message whose body is empty and whose only content is an attached ITB PDF, when extracted, then all fields come from the attachment and each `source.location` starts with `attachment:`.
+- [x] Given a vendor newsletter from a lighting rep, when classified, then `kind=not_bid` and no extraction is run.
+- [x] Given an API outage, when extraction fails 3 times, then the message is marked `extraction_failed`, appears in the next digest's Needs review, and is retried automatically when the API recovers.
+- [x] Given the same message extracted twice with the same prompt version, then the two records are field-for-field identical except `extraction_meta`.
 
 ## Edge Cases and Required Tests
 

@@ -1,25 +1,118 @@
 {
-  "kind": "itb", "kind_confidence": 0.95,
-  "project_name": {"value": "Benedum Hall Lab Renovation", "confidence": 0.95, "source": "subject"},
-  "project_number": {"value": null, "confidence": 0, "source": null},
-  "gc_name": {"value": "PJ Dick", "confidence": 0.98, "source": "Senior Estimator | PJ Dick"},
-  "gc_contacts": [{"name": "Jane Doe", "email": "jdoe@pjdick.com", "phone": "412-555-0100", "role": "Senior Estimator"}],
-  "owner_name": {"value": "University of Pittsburgh", "confidence": 0.8, "source": "lab renovation at Pitt"},
-  "architect_engineer": {"value": null, "confidence": 0, "source": null},
-  "location": {"raw": "Benedum Hall, Pitt", "street": null, "city": "Pittsburgh", "state": "PA", "postal_code": null, "confidence": 0.8, "source": "Benedum Hall lab renovation at Pitt"},
-  "project_type": "higher_education", "project_type_confidence": 0.95, "project_subtype": "lab renovation",
-  "new_or_renovation": "renovation", "bid_type": "hard_bid", "sector": "institutional_private", "delivery_channel": "email",
-  "bid_due": {"value": "2026-10-16T14:00:00", "timezone": null, "time_known": true, "confidence": 0.98, "source": "Bids are due Thursday, October 16th at 2:00 PM."},
-  "prebid": {"value": "2026-10-07T10:00:00", "timezone": null, "location": "Benedum lobby", "mandatory": true, "confidence": 0.97, "source": "Mandatory pre-bid walk is Tuesday 10/7 at 10 AM at the Benedum lobby."},
-  "rfi_deadline": {"value": "2026-10-09", "timezone": null, "time_known": false, "confidence": 0.9, "source": "Questions due 10/9."},
-  "intent_due": {"value": null, "timezone": null, "time_known": false, "confidence": 0, "source": null},
-  "anticipated_start": null, "duration_months": null,
-  "size_signals": {"stated_project_value": null, "stated_electrical_value": null, "square_feet": null, "stories": null, "units_or_beds": null, "description": null, "confidence": 0, "source": null},
+  "kind": "itb",
+  "kind_confidence": 0.95,
+  "project_name": {
+    "value": "Benedum Hall Lab Renovation",
+    "confidence": 0.95,
+    "source": "Benedum Hall Lab Renovation - Electrical ITB",
+    "source_location": "subject"
+  },
+  "project_number": {
+    "value": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "gc_name": {
+    "value": "PJ Dick",
+    "confidence": 0.98,
+    "source": "Senior Estimator | PJ Dick",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Jane Doe",
+      "email": "jdoe@pjdick.com",
+      "phone": "412-555-0100",
+      "role": "Senior Estimator"
+    }
+  ],
+  "owner_name": {
+    "value": "University of Pittsburgh",
+    "confidence": 0.8,
+    "source": "lab renovation at Pitt",
+    "source_location": "body"
+  },
+  "architect_engineer": {
+    "value": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "location": {
+    "raw": "Benedum Hall, Pitt",
+    "street": null,
+    "city": "Pittsburgh",
+    "state": "PA",
+    "postal_code": null,
+    "confidence": 0.8,
+    "source": "Benedum Hall lab renovation at Pitt",
+    "source_location": "body"
+  },
+  "project_type": "higher_education",
+  "project_type_confidence": 0.95,
+  "project_subtype": "lab renovation",
+  "new_or_renovation": "renovation",
+  "bid_type": "hard_bid",
+  "sector": "institutional_private",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "2026-10-16T14:00:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.98,
+    "source": "Bids are due Thursday, October 16th at 2:00 PM.",
+    "source_location": "body"
+  },
+  "prebid": {
+    "value": "2026-10-07T10:00:00",
+    "timezone": null,
+    "location": "Benedum lobby",
+    "mandatory": true,
+    "confidence": 0.97,
+    "source": "Mandatory pre-bid walk is Tuesday 10/7 at 10 AM at the Benedum lobby.",
+    "source_location": "body"
+  },
+  "rfi_deadline": {
+    "value": "2026-10-09",
+    "timezone": null,
+    "time_known": false,
+    "confidence": 0.9,
+    "source": "Questions due 10/9.",
+    "source_location": "body"
+  },
+  "intent_due": {
+    "value": null,
+    "timezone": null,
+    "time_known": false,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
+  "anticipated_start": null,
+  "duration_months": null,
+  "size_signals": {
+    "stated_project_value": null,
+    "stated_electrical_value": null,
+    "square_feet": null,
+    "stories": null,
+    "units_or_beds": null,
+    "description": null,
+    "confidence": 0,
+    "source": null,
+    "source_location": null
+  },
   "scope_items": [],
-  "scope_text": null, "exclusions_text": null,
-  "flags": ["requested_by_name", "mandatory_prebid"],
+  "scope_text": null,
+  "exclusions_text": null,
+  "flags": [
+    "requested_by_name",
+    "mandatory_prebid"
+  ],
   "document_links": [],
-  "addendum_label": null, "addendum_number": null, "changes_described": null,
+  "addendum_label": null,
+  "addendum_number": null,
+  "changes_described": null,
   "trade_relevance": "primary",
   "summary": "PJ Dick personally asks Ferry to bid the electrical package on the Benedum Hall lab renovation at Pitt; documents are on BuildingConnected. Mandatory pre-bid walk."
 }

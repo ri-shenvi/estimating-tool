@@ -3,6 +3,9 @@
 `LLMExtraction` is what the model returns (structured outputs; strings for dates so the JSON
 schema stays simple and portable). `ExtractedOpportunity` is the post-processed domain record
 with real datetimes, enforced date rules and derived flags. See SPEC-02 F2.
+
+The schema is versioned with the prompt (`SCHEMA_VERSION` here, `prompts/extract_vN.md`): the two
+are a pair, because a field the prompt never explains is a field the model fills badly.
 """
 
 from __future__ import annotations
@@ -154,59 +157,81 @@ class TradeRelevance(StrEnum):
     none = "none"
 
 
+class GeoPrecision(StrEnum):
+    """How precisely `location` was geocoded. `none` means the geocoder found nothing."""
+
+    exact = "exact"
+    street = "street"
+    city = "city"
+    region = "region"
+    none = "none"
+
+
+SOURCE_EXCERPT_CHARS = 200
+SCHEMA_VERSION = "v2"
+
+# Below this, the classification is shown on the review page — but the message is still processed
+# as its best guess, never dropped (SPEC-02 F1).
+KIND_REVIEW_CONFIDENCE = 0.6
+
+
 class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class StrField(_Strict):
-    value: str | None = None
+class _Sourced(_Strict):
+    """Every extracted field carries its own confidence and where it came from (SPEC-02 F2)."""
+
     confidence: float = Field(default=0.0, ge=0, le=1)
     source: str | None = Field(
-        default=None, description="Verbatim excerpt (<=200 chars) and location"
+        default=None, description="Verbatim excerpt from the message, <=200 chars"
+    )
+    source_location: str | None = Field(
+        default=None,
+        description="Where the excerpt is: 'subject', 'body', or 'attachment:<name>:p<page>'",
     )
 
 
-class LLMDateTimeField(_Strict):
+class StrField(_Sourced):
+    value: str | None = None
+
+
+class LLMDateTimeField(_Sourced):
     value: str | None = Field(
         default=None,
-        description="ISO 8601 local datetime, e.g. 2026-10-16T14:00:00; date-only allowed",
+        description=(
+            "ISO 8601 local datetime, e.g. 2026-10-16T14:00:00; date-only allowed. "
+            "'10-16' when the text states no year; 'weekday:friday@12:00' for a bare weekday."
+        ),
     )
     timezone: str | None = Field(
         default=None, description="IANA zone if stated, e.g. America/Chicago"
     )
     time_known: bool = False
-    confidence: float = Field(default=0.0, ge=0, le=1)
-    source: str | None = None
 
 
-class LLMPrebid(_Strict):
+class LLMPrebid(_Sourced):
     value: str | None = None
     timezone: str | None = None
     location: str | None = None
     mandatory: bool | None = None
-    confidence: float = Field(default=0.0, ge=0, le=1)
-    source: str | None = None
 
 
-class Location(_Strict):
+class Location(_Sourced):
     raw: str | None = None
     street: str | None = None
     city: str | None = None
     state: str | None = None
     postal_code: str | None = None
-    confidence: float = Field(default=0.0, ge=0, le=1)
-    source: str | None = None
 
 
-class SizeSignals(_Strict):
+class SizeSignals(_Sourced):
     stated_project_value: float | None = None
     stated_electrical_value: float | None = None
     square_feet: float | None = None
     stories: int | None = None
     units_or_beds: int | None = None
     description: str | None = None
-    confidence: float = Field(default=0.0, ge=0, le=1)
-    source: str | None = None
 
 
 class Contact(_Strict):
@@ -263,8 +288,10 @@ class LLMExtraction(_Strict):
 class DateTimeField(BaseModel):
     value: datetime | None = None
     time_known: bool = False
+    timezone: str | None = None
     confidence: float = 0.0
     source: str | None = None
+    source_location: str | None = None
 
 
 class Prebid(BaseModel):
@@ -273,11 +300,27 @@ class Prebid(BaseModel):
     mandatory: bool | None = None
     confidence: float = 0.0
     source: str | None = None
+    source_location: str | None = None
+
+
+class GeoLocation(Location):
+    """`Location` after geocoding. The model never fills these; the post-processor does."""
+
+    lat: float | None = None
+    lon: float | None = None
+    geo_precision: GeoPrecision = GeoPrecision.none
+
+    @property
+    def geo(self) -> tuple[float, float] | None:
+        """None when the geocoder found nothing, per SPEC-02 F3."""
+        if self.lat is None or self.lon is None:
+            return None
+        return (self.lat, self.lon)
 
 
 class ExtractionMeta(BaseModel):
     model: str = "fake"
-    prompt_version: str = "v1"
+    prompt_version: str = "unknown"
     input_tokens: int = 0
     output_tokens: int = 0
     latency_ms: int = 0
@@ -294,7 +337,7 @@ class ExtractedOpportunity(BaseModel):
     gc_contacts: list[Contact]
     owner_name: StrField
     architect_engineer: StrField
-    location: Location
+    location: GeoLocation
     project_type: ProjectType
     project_type_confidence: float
     project_subtype: str | None

@@ -1,0 +1,64 @@
+{
+  "kind": "itb",
+  "kind_confidence": 0.97,
+  "project_name": {
+    "value": "Shaler Township Public Works Garage",
+    "confidence": 0.95,
+    "source": "subject",
+    "source_location": "subject"
+  },
+  "gc_name": {
+    "value": "Jendoco Construction",
+    "confidence": 0.97,
+    "source": "Jendoco is bidding the Shaler Township Public Works Garage addition",
+    "source_location": "body"
+  },
+  "gc_contacts": [
+    {
+      "name": "Pat Foreman",
+      "email": "pforeman@jendoco.com",
+      "phone": null,
+      "role": null
+    }
+  ],
+  "owner_name": {
+    "value": "Shaler Township",
+    "confidence": 0.85,
+    "source": "Shaler Township Public Works Garage",
+    "source_location": "body"
+  },
+  "location": {
+    "raw": "300 Wetzel Road, Glenshaw, PA 15116",
+    "street": "300 Wetzel Road",
+    "city": "Glenshaw",
+    "state": "PA",
+    "postal_code": "15116",
+    "confidence": 0.96,
+    "source": "300 Wetzel Road, Glenshaw, PA 15116",
+    "source_location": "body"
+  },
+  "project_type": "government_civic",
+  "project_type_confidence": 0.9,
+  "new_or_renovation": "addition",
+  "bid_type": "hard_bid",
+  "sector": "public",
+  "delivery_channel": "email",
+  "bid_due": {
+    "value": "01-08T14:00",
+    "timezone": null,
+    "time_known": true,
+    "confidence": 0.95,
+    "source": "Bids are due January 8 at 2:00 PM.",
+    "source_location": "body"
+  },
+  "scope_items": [
+    "service_and_distribution",
+    "branch_power",
+    "lighting",
+    "lighting_controls",
+    "fire_alarm"
+  ],
+  "scope_text": "Electrical scope: service and distribution, branch power, LED lighting and controls, and fire alarm.",
+  "trade_relevance": "primary",
+  "summary": "Public works garage addition for Shaler Township with Jendoco. Electrical scope is service and distribution, branch power, LED lighting and controls, and fire alarm."
+}

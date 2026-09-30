@@ -135,7 +135,12 @@ class RawMessage(Base):
     attachments_truncated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     kind: Mapped[str | None] = mapped_column(String(30), index=True)
     kind_confidence: Mapped[float | None] = mapped_column(Float)
-    extraction_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    # pending | skipped | retrying | failed | done (SPEC-02 F3)
+    extraction_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", index=True
+    )
+    extraction_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    extraction_error: Mapped[str | None] = mapped_column(String(400))
     created_at: Mapped[datetime] = _ts()
 
     attachments: Mapped[list[RawAttachment]] = relationship(back_populates="message")
@@ -463,3 +468,14 @@ class CalendarToken(Base):
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     scope: Mapped[str] = mapped_column(String(20), nullable=False, default="personal")
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class GeocodeCache(Base):
+    """Memoized forward-geocoding results, so a repeat job site costs no provider call (SPEC-02 F3)."""
+
+    __tablename__ = "geocode_cache"
+    query_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    query: Mapped[str] = mapped_column(String(400), nullable=False)
+    lat: Mapped[float] = mapped_column(Float, nullable=False)
+    lon: Mapped[float] = mapped_column(Float, nullable=False)
+    precision: Mapped[str] = mapped_column(String(10), nullable=False, default="none")
