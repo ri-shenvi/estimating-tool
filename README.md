@@ -53,7 +53,7 @@ Full stack with Postgres and a local mail catcher (Mailpit at http://localhost:8
 ```bash
 cp .env.example .env            # fill ANTHROPIC_API_KEY for live extraction
 docker compose -f infra/docker-compose.yml up -d postgres mailpit
-uv run alembic revision --autogenerate -m "initial" && uv run alembic upgrade head
+uv run alembic upgrade head
 uv run bidtriage seed-gcs
 uv run bidtriage api            # terminal 1
 uv run bidtriage worker         # terminal 2 (add --fake-fixtures tests/fixtures/messages to avoid API calls)
@@ -69,6 +69,7 @@ uv run bidtriage worker         # terminal 2 (add --fake-fixtures tests/fixtures
 | `bidtriage poll-sources` | Poll every active source once; prints seen/new/duplicates per source |
 | `bidtriage source-health` | `ok` / `degraded` / `down` per source (SPEC-01 F8 thresholds) |
 | `bidtriage ingest-metrics` | Poll success rate, ingestion lag p50/p95, attachment and duplicate counts |
+| `bidtriage ingest-skips` | Messages ingestion gave up on, so a gap is never silent |
 | `bidtriage digest-preview` | Build the digest without sending |
 | `bidtriage eval-extraction tests/fixtures/messages [--offline]` | Per-field extraction accuracy against `.expected.json` |
 | `bidtriage calibrate labeled.csv` | Precision/recall of the Bid band against the chief estimator's labels |

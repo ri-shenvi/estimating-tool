@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -12,9 +13,11 @@ from sqlalchemy.orm import Session
 from bidtriage.core.blobs import BlobStore
 from bidtriage.core.config import get_settings
 from bidtriage.core.jobs import enqueue
-from bidtriage.core.models import Extraction, Opportunity, RawMessage, Source, User
+from bidtriage.core.models import Extraction, Job, Opportunity, RawMessage, Source, User
 from bidtriage.extraction.protocol import Extractor
 from bidtriage.worker import ingest_job, pipeline
+
+log = logging.getLogger("bidtriage.worker")
 
 Handler = Callable[[Session, dict[str, Any], "Context"], None]
 
@@ -30,6 +33,7 @@ class Context:
         self.sources = sources or {}
         self.blobs = blobs
         self.settings = get_settings()
+        self._source_fingerprints: dict[str, str] = {}
 
     @property
     def extractor(self) -> Extractor:
@@ -42,13 +46,21 @@ class Context:
         return (self.settings.home_lat, self.settings.home_lon)
 
     def source_impl(self, src: Source) -> Any:
-        """Registered implementation if a test injected one, else built from the row's config."""
-        impl = self.sources.get(src.id)
-        if impl is None:
-            from bidtriage.worker.sources import build_source
+        """Registered implementation if a test injected one, else built from the row's config.
 
-            impl = build_source(src, self.settings.secret_key)
-            self.sources[src.id] = impl
+        The cache is keyed on a fingerprint of `config_enc`, so rotating a client secret or app
+        password takes effect on the next poll instead of needing a worker restart (SPEC-10 F3).
+        """
+        from bidtriage.worker.sources import build_source, config_fingerprint
+
+        impl = self.sources.get(src.id)
+        fingerprint = config_fingerprint(src)
+        if impl is not None and self._source_fingerprints.get(src.id) in (None, fingerprint):
+            # None means a test injected this implementation directly; leave it alone.
+            return impl
+        impl = build_source(src, self.settings.secret_key)
+        self.sources[src.id] = impl
+        self._source_fingerprints[src.id] = fingerprint
         return impl
 
 
@@ -65,15 +77,6 @@ def poll_source(session: Session, payload: dict[str, Any], ctx: Context) -> None
         return
     src, impl = _source_impl(session, payload, ctx)
     ingest_job.run_poll(session, src, impl, ctx)
-    if not src.backfill_done:
-        # First connection: start the history walk behind live mail (SPEC-01 F7).
-        enqueue(
-            session,
-            "backfill_source",
-            f"backfill:{src.id}:0",
-            {"source_id": src.id},
-            priority=ingest_job.BACKFILL_PRIORITY,
-        )
 
 
 def backfill_source(session: Session, payload: dict[str, Any], ctx: Context) -> None:
@@ -86,6 +89,14 @@ def backfill_source(session: Session, payload: dict[str, Any], ctx: Context) -> 
 
 def check_sources(session: Session, payload: dict[str, Any], ctx: Context) -> None:
     ingest_job.check_sources(session, ctx)
+
+
+def ingest_maintenance(session: Session, payload: dict[str, Any], ctx: Context) -> None:
+    """Close polls abandoned by a dead worker and prune old poll history (SPEC-10 F6)."""
+    closed = ingest_job.close_abandoned_polls(session)
+    pruned = ingest_job.prune_polls(session, retention_days=ctx.settings.ingest_poll_retention_days)
+    if closed or pruned:
+        log.info("ingest maintenance: closed=%d pruned=%d", closed, pruned)
 
 
 def extract_message(session: Session, payload: dict[str, Any], ctx: Context) -> None:
@@ -166,6 +177,22 @@ def build_and_send_digest(session: Session, payload: dict[str, Any], ctx: Contex
     )
 
 
+def _backfill_outstanding(session: Session, source_id: str) -> bool:
+    """True when a backfill batch for this source is already queued or running."""
+    return (
+        session.scalar(
+            select(Job.id)
+            .where(
+                Job.kind == "backfill_source",
+                Job.status.in_(["pending", "leased"]),
+                Job.key.like(f"backfill:{source_id}:%"),
+            )
+            .limit(1)
+        )
+        is not None
+    )
+
+
 def schedule_tick(session: Session, ctx: Context, now: datetime | None = None) -> None:
     """Called every minute by the scheduler; enqueues idempotent jobs with minute-bucket keys."""
     now = now or datetime.now(tz=UTC)
@@ -173,8 +200,30 @@ def schedule_tick(session: Session, ctx: Context, now: datetime | None = None) -
     five = now.strftime("%Y%m%d%H") + str(now.minute // 5)
     for src in session.scalars(select(Source).where(Source.paused.is_(False))).all():
         enqueue(session, "poll_source", f"poll:{src.id}:{five}", {"source_id": src.id}, priority=50)
+        if (
+            not src.backfill_done
+            and not src.backfill_stuck
+            and not _backfill_outstanding(session, src.id)
+        ):
+            # Chaining inside run_backfill is the fast path; this tick starts the walk on first
+            # connection and recovers a chain broken by a job that exhausted its retries
+            # (SPEC-10 F5). Skipped while a batch is still queued so one source never has two.
+            enqueue(
+                session,
+                "backfill_source",
+                f"backfill:{src.id}:tick:{five}",
+                {"source_id": src.id},
+                priority=ingest_job.BACKFILL_PRIORITY,
+            )
     enqueue(session, "unsnooze", f"unsnooze:{five}", {}, priority=90)
     enqueue(session, "check_sources", f"check_sources:{five}", {}, priority=40)
+    enqueue(
+        session,
+        "ingest_maintenance",
+        f"ingest_maintenance:{now.strftime('%Y%m%d%H')}",
+        {},
+        priority=95,
+    )
     from zoneinfo import ZoneInfo
 
     local = now.astimezone(ZoneInfo(ctx.settings.digest_timezone))
@@ -203,6 +252,7 @@ HANDLERS: dict[str, Handler] = {
     "poll_source": poll_source,
     "backfill_source": backfill_source,
     "check_sources": check_sources,
+    "ingest_maintenance": ingest_maintenance,
     "extract_message": extract_message,
     "resolve_message": resolve_message,
     "score_opportunity": score_opportunity,

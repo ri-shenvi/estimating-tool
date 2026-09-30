@@ -21,9 +21,9 @@ from bidtriage.core.models import (
     User,
 )
 from bidtriage.ingestion.eml import parse_eml
-from bidtriage.ingestion.protocol import PollResult
+from bidtriage.ingestion.protocol import FetchedMessage, FetchOptions, FetchSession
 from bidtriage.worker import ingest_job, pipeline
-from bidtriage.worker.handlers import Context, poll_source
+from bidtriage.worker.handlers import Context
 from tests.helpers import blank_pdf, tiny_pdf, zip_bytes
 
 NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
@@ -33,27 +33,68 @@ NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 
 
 class StubSource:
-    """A source whose batches are scripted, so poll/backfill behaviour is deterministic."""
+    """A source whose batches are scripted, so poll and backfill behaviour is deterministic."""
 
-    def __init__(self, batches: list[list[tuple[str, bytes]]], *, errors: list[str] | None = None):
+    can_backfill = True
+
+    def __init__(
+        self,
+        batches: list[list[tuple[str, bytes]]],
+        *,
+        errors: list[str] | None = None,
+        fetch_fails: set[str] | None = None,
+    ):
         self.batches = batches
         self.errors = errors or []
+        self.fetch_fails = fetch_fails or set()
         self.calls = 0
         self.backfill_calls: list[datetime] = []
+        self.seeded = 0
 
-    def poll(self, state: dict[str, Any], *, limit: int = 200) -> PollResult:
+    def fetch(self, state: dict[str, Any], options: FetchOptions) -> StubSession:
+        if options.since is not None:
+            self.backfill_calls.append(options.since)
         batch = self.batches[min(self.calls, len(self.batches) - 1)]
         self.calls += 1
-        return PollResult(
-            [(pid, parse_eml(raw)) for pid, raw in batch],
-            {**state, "calls": self.calls},
-            list(self.errors),
-            more_available=self.calls < len(self.batches),
-        )
+        return StubSession(self, state, options, batch)
 
-    def backfill(self, state: dict[str, Any], *, since: datetime, limit: int = 50) -> PollResult:
-        self.backfill_calls.append(since)
-        return self.poll(state, limit=limit)
+    def seed(self, state: dict[str, Any]) -> dict[str, Any]:
+        self.seeded += 1
+        return {"cursor": "at-now"}
+
+
+class StubSession(FetchSession):
+    def __init__(
+        self,
+        source: StubSource,
+        state: dict[str, Any],
+        options: FetchOptions,
+        batch: list[tuple[str, bytes]],
+    ) -> None:
+        super().__init__(state, options)
+        self.source = source
+        self.batch = batch
+        self.errors = list(source.errors)
+
+    def _messages(self):  # type: ignore[no-untyped-def]
+        for pid, raw in self.batch:
+            if self.pass_over(pid):
+                continue
+            if pid in self.source.fetch_fails:
+                self.fail(pid, "fetch failed")
+                continue
+            yield FetchedMessage(provider_message_id=pid, parsed=parse_eml(raw))
+
+    def new_state(self) -> dict[str, Any]:
+        return {**self.state, "calls": self.source.calls}
+
+    @property
+    def more_available(self) -> bool:  # type: ignore[override]
+        return self.source.calls < len(self.source.batches)
+
+    @more_available.setter
+    def more_available(self, value: bool) -> None:
+        self._more = value
 
 
 @pytest.fixture
@@ -437,7 +478,9 @@ def test_paused_source_is_not_alerted(session, ctx):
 
 def test_failed_poll_still_writes_a_poll_row(session, ctx):
     class Broken:
-        def poll(self, state: dict[str, Any], *, limit: int = 200) -> PollResult:
+        can_backfill = False
+
+        def fetch(self, state: dict[str, Any], options: FetchOptions) -> FetchSession:
             raise RuntimeError("401 unauthorized: token revoked")
 
     src = _source(session)
@@ -472,7 +515,9 @@ def test_revoked_credentials_lead_to_down_and_one_alert(session, ctx):
     src = _source(session)
 
     class Revoked:
-        def poll(self, state: dict[str, Any], *, limit: int = 200) -> PollResult:
+        can_backfill = False
+
+        def fetch(self, state: dict[str, Any], options: FetchOptions) -> FetchSession:
             raise RuntimeError("AADSTS7000215: invalid client secret")
 
     for _ in range(12):  # an hour of five-minute polls
@@ -537,18 +582,42 @@ def test_live_cursor_is_not_seeded_when_backfill_is_disabled(session, ctx):
 
 
 def test_backfill_runs_behind_live_polls(session, ctx):
-    """poll_source enqueues the backfill at a lower priority, so live mail is claimed first."""
+    """Jobs are claimed by ascending priority, so a due live poll always wins (SPEC-01 F7)."""
+    from bidtriage.core.models import Job
+    from bidtriage.worker.handlers import schedule_tick
+
     src = _source(session)
     src.backfill_done = False
     session.flush()
-    impl = StubSource([[("live-1", _eml("live@gc.com"))]])
-    ctx.sources[src.id] = impl
+    ctx.sources[src.id] = StubSource([[("live-1", _eml("live@gc.com"))]])
 
-    poll_source(session, {"source_id": src.id}, ctx)
+    schedule_tick(session, ctx, now=NOW)
+    kinds = [j.kind for j in session.scalars(select(Job)).all()]
+    assert "poll_source" in kinds and "backfill_source" in kinds
+    # Claim order is by ascending priority: the cheap health sweep (40), then live mail (50), and
+    # the history walk (80) last, so a backfill can never starve live mail.
+    claimed = [claim(session).kind for _ in range(4)]
+    assert claimed[:3] == ["check_sources", "poll_source", "backfill_source"]
+    assert claimed.index("poll_source") < claimed.index("backfill_source")
+
+
+def test_only_one_backfill_batch_is_queued_per_source(session, ctx):
+    """Two outstanding batches for one source would interleave their cursor writes."""
+    from bidtriage.core.models import Job
+    from bidtriage.worker.handlers import schedule_tick
+
+    src = _source(session)
+    src.backfill_done = False
     session.flush()
-    enqueue(session, "poll_source", f"poll:{src.id}:next", {"source_id": src.id}, priority=50)
-    assert claim(session).kind == "poll_source"
-    assert claim(session).kind == "backfill_source"
+
+    schedule_tick(session, ctx, now=NOW)
+    schedule_tick(session, ctx, now=NOW + timedelta(minutes=6))  # a later bucket
+    queued = [
+        j
+        for j in session.scalars(select(Job)).all()
+        if j.kind == "backfill_source" and j.status == "pending"
+    ]
+    assert len(queued) == 1
 
 
 def test_backfill_chains_batches_then_finishes(session, ctx):
@@ -570,16 +639,38 @@ def test_backfill_chains_batches_then_finishes(session, ctx):
     assert timedelta(days=89) < datetime.now(tz=UTC) - since < timedelta(days=91)
 
 
-def test_backfill_is_skipped_for_sources_that_cannot_walk_history(session, ctx):
-    class LiveOnly:
-        def poll(self, state: dict[str, Any], *, limit: int = 200) -> PollResult:
-            return PollResult([], state, [])
+def test_seed_requires_backfill_support(session, ctx):
+    """A source that cannot walk history must not have its live cursor parked (SPEC-10 F5).
 
+    Seeding it would skip the history *and* leave nothing to ingest it.
+    """
+
+    class LiveOnly:
+        can_backfill = False
+
+        def __init__(self) -> None:
+            self.seeded = 0
+            self.fetched = 0
+
+        def seed(self, state: dict[str, Any]) -> dict[str, Any]:
+            self.seeded += 1
+            return {"cursor": "at-now"}
+
+        def fetch(self, state: dict[str, Any], options: FetchOptions) -> FetchSession:
+            self.fetched += 1
+            return StubSession(StubSource([[]]), state, options, [])
+
+    impl = LiveOnly()
     src = _source(session)
+    src.delta_state = {}
     src.backfill_done = False
+    src.backfill_days = 90
     session.flush()
-    ingest_job.run_backfill(session, src, LiveOnly(), ctx)
-    assert src.backfill_done
+
+    ingest_job.run_poll(session, src, impl, ctx)
+    assert impl.seeded == 0, "not seeded, so the first poll still sees existing mail"
+    ingest_job.run_backfill(session, src, impl, ctx)
+    assert src.backfill_done, "nothing to walk, so the backfill is complete by definition"
 
 
 # ---------------------------------------------------------------- crash resume, throughput
@@ -616,18 +707,46 @@ def test_crash_resume(session, ctx, monkeypatch):
 
 
 def test_throughput(session, ctx):
-    """Ingestion keeps up with a newsletter-heavy mailbox: >= 5 msgs/sec (SPEC-01 edge cases)."""
+    """Ingestion keeps up with a newsletter-heavy mailbox (SPEC-01 edge case).
+
+    Asserted as bounded work — a constant number of queries per message and no batch-sized memory —
+    rather than a wall-clock rate, which flakes on a loaded CI runner. A generous time bound is kept
+    only to catch an accidental quadratic.
+    """
+    import tracemalloc
+
+    from sqlalchemy import event
+
     src = _source(session)
+    count = 200
     batch = [
         (f"n{i}", _eml(f"n{i}@news.com", subject=f"Newsletter {i}", body=f"Issue {i}. " * 40))
-        for i in range(200)
+        for i in range(count)
     ]
+
+    queries = 0
+
+    def count_query(*args: object, **kwargs: object) -> None:
+        nonlocal queries
+        queries += 1
+
+    engine = session.get_bind()
+    event.listen(engine, "before_cursor_execute", count_query)
+    tracemalloc.start()
     started = time.perf_counter()
-    summary = ingest_job.run_poll(session, src, StubSource([batch]), ctx)
-    elapsed = time.perf_counter() - started
-    assert summary.new == 200
-    rate = 200 / elapsed
-    assert rate >= 5, f"ingested {rate:.1f} msgs/sec"
+    try:
+        summary = ingest_job.run_poll(session, src, StubSource([batch]), ctx)
+    finally:
+        elapsed = time.perf_counter() - started
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        event.remove(engine, "before_cursor_execute", count_query)
+
+    assert summary.new == count
+    per_message = queries / count
+    assert per_message < 20, f"{per_message:.1f} queries per message suggests an N+1"
+    assert peak < 32 * 1024 * 1024, f"peak {peak / 1e6:.0f} MB should not scale with the batch"
+    assert elapsed < 20, f"ingested {count / elapsed:.1f} msgs/sec"
 
 
 # ---------------------------------------------------------------- metrics
@@ -714,3 +833,535 @@ def test_worker_loop_ingests_through_the_job_queue(session, ctx):
     msg = session.scalars(select(RawMessage)).one()
     assert msg.internet_message_id == "<loop@gc.com>"
     assert session.scalars(select(SourcePoll)).one().new == 1
+
+
+# ---------------------------------------------------------------- SPEC-10 F1: skips
+
+
+def test_poison_message_is_skipped_and_surfaced(session, ctx):
+    """After the attempt limit a message is given up on, the cursor passes it, and it is reviewable."""
+    from bidtriage.core.models import SourceSkip
+
+    src = _source(session)
+    good = ("ok", _eml("ok@gc.com", subject="ITB good"))
+    bad = ("poison", _eml("bad@gc.com", subject="ITB bad"))
+    impl = StubSource([[good, bad]] * 10, fetch_fails={"poison"})
+
+    limit = ctx.settings.ingest_max_fetch_attempts
+    for _ in range(limit):
+        ingest_job.run_poll(session, src, impl, ctx)
+
+    skip = session.get(SourceSkip, {"source_id": src.id, "provider_message_id": "poison"})
+    assert skip is not None and skip.attempts == limit and skip.given_up
+    assert "fetch failed" in (skip.last_error or "")
+
+    # Given up on, so the next poll passes over it rather than retrying forever...
+    ingest_job.run_poll(session, src, impl, ctx)
+    assert ingest_job.given_up_ids(session, src.id) == frozenset({"poison"})
+    # ...and it is a review item in the digest instead of a silent gap.
+    from bidtriage.worker.digest_job import review_items
+
+    kinds = [r.kind for r in review_items(session, "http://x")]
+    assert "ingest_skipped" in kinds
+    assert session.scalars(select(SourcePoll)).all()[-1].skipped == 1
+
+
+def test_recovered_message_clears_its_skip_row(session, ctx):
+    from bidtriage.core.models import SourceSkip
+
+    src = _source(session)
+    batch = [("flaky", _eml("flaky@gc.com"))]
+    impl = StubSource([batch, batch], fetch_fails={"flaky"})
+    ingest_job.run_poll(session, src, impl, ctx)
+    assert (
+        session.get(SourceSkip, {"source_id": src.id, "provider_message_id": "flaky"}) is not None
+    )
+
+    impl.fetch_fails.clear()
+    ingest_job.run_poll(session, src, impl, ctx)
+    assert session.get(SourceSkip, {"source_id": src.id, "provider_message_id": "flaky"}) is None
+    assert session.scalar(select(func.count()).select_from(RawMessage)) == 1
+
+
+# ---------------------------------------------------------------- SPEC-10 F3
+
+
+def test_source_impl_rebuilt_on_config_change(session):
+    """Rotating a secret takes effect on the next poll, with no worker restart (SPEC-10 F3)."""
+    from bidtriage.core.config import get_settings
+    from bidtriage.worker.sources import encode_config
+
+    secret = get_settings().secret_key
+    src = Source(
+        kind="imap",
+        name="Estimating",
+        mailbox="estimating@ferryelectric.com",
+        config_enc=encode_config({"host": "mail.x.com", "password": "old"}, secret),
+    )
+    session.add(src)
+    session.flush()
+
+    ctx = Context(None)
+    first = ctx.source_impl(src)
+    assert ctx.source_impl(src) is first, "unchanged config reuses the built source"
+
+    src.config_enc = encode_config({"host": "mail.x.com", "password": "rotated"}, secret)
+    rebuilt = ctx.source_impl(src)
+    assert rebuilt is not first
+    assert rebuilt.password == "rotated"
+
+
+def test_injected_source_impl_is_never_rebuilt(session):
+    """A test-injected implementation must survive, or every source test would build a real one."""
+    src = _source(session)
+    stub = StubSource([[]])
+    ctx = Context(None, sources={src.id: stub})
+    assert ctx.source_impl(src) is stub
+    src.config_enc = "something-else"
+    assert ctx.source_impl(src) is stub
+
+
+# ---------------------------------------------------------------- SPEC-10 F4
+
+
+def test_duplicate_link_target_is_deterministic(session, ctx, blobs):
+    """With several content-hash matches the earliest is always the link target (SPEC-10 F4)."""
+    src = _source(session)
+    parsed = parse_eml(_eml("dup@gc.com"))
+    parsed.internet_message_id = None
+
+    class At:
+        def __init__(self, at: datetime) -> None:
+            self.at = at
+
+        def now(self) -> datetime:
+            return self.at
+
+    first, _ = pipeline.ingest_parsed(
+        session,
+        source_id=src.id,
+        provider_message_id="a",
+        parsed=parsed,
+        clock=At(NOW),
+        blobs=blobs,
+    )
+    # A second row with the same content hash, as a rescan under a different id could create.
+    session.add(
+        RawMessage(
+            id="later",
+            content_hash=parsed.content_hash,
+            received_at=NOW + timedelta(hours=1),
+            created_at=NOW + timedelta(hours=1),
+            headers={},
+        )
+    )
+    session.flush()
+    linked, is_new = pipeline.ingest_parsed(
+        session,
+        source_id=src.id,
+        provider_message_id="c",
+        parsed=parsed,
+        clock=At(NOW + timedelta(hours=2)),
+        blobs=blobs,
+    )
+    assert not is_new and linked.id == first.id
+
+
+def test_copies_matches_source_count(session, ctx):
+    """`copies` is derived, so it cannot drift from message_sources (SPEC-10 F4)."""
+    raw = _eml("fan@gc.com")
+    for mailbox in ("estimating@f.com", "casey@f.com", "dana@f.com"):
+        src = _source(session, mailbox=mailbox)
+        ingest_job.run_poll(session, src, StubSource([[("p", raw)]]), ctx)
+    # ...and a re-scan of one mailbox under a new provider id must not inflate it.
+    again = session.scalars(select(Source)).first()
+    assert again is not None
+    ingest_job.run_poll(session, again, StubSource([[("p-rescanned", raw)]]), ctx)
+
+    msg = session.scalars(select(RawMessage)).one()
+    distinct = session.scalar(
+        select(func.count(func.distinct(MessageSource.source_id))).where(
+            MessageSource.message_id == msg.id
+        )
+    )
+    assert msg.copies == distinct == 3
+
+
+def test_duplicate_message_id_is_rejected_by_the_database(session):
+    """The partial unique index is the backstop when two workers race (SPEC-10 F4)."""
+    from sqlalchemy.exc import IntegrityError
+
+    for i in (1, 2):
+        session.add(
+            RawMessage(
+                id=f"m{i}",
+                internet_message_id="<race@gc.com>",
+                content_hash=f"h{i}",
+                received_at=NOW,
+                created_at=NOW,
+                headers={},
+            )
+        )
+    with pytest.raises(IntegrityError):
+        session.flush()
+    session.rollback()
+
+
+def test_messages_without_a_message_id_do_not_collide(session):
+    """The unique index is partial: the many messages with no Message-ID must still be storable."""
+    for i in range(3):
+        session.add(
+            RawMessage(
+                id=f"m{i}",
+                internet_message_id=None,
+                content_hash=f"h{i}",
+                received_at=NOW,
+                created_at=NOW,
+                headers={},
+            )
+        )
+    session.flush()
+    assert session.scalar(select(func.count()).select_from(RawMessage)) == 3
+
+
+def test_concurrent_dedupe_race(session, ctx, blobs):
+    """A racing insert is converted into a duplicate link rather than a second row (SPEC-10 F4)."""
+    src_a = _source(session, kind="graph", mailbox="estimating@f.com")
+    src_b = _source(session, kind="imap", mailbox="casey@f.com")
+    parsed = parse_eml(_eml("race@gc.com"))
+
+    # Stand in for the other worker having committed between our read and our insert.
+    real_find = pipeline.find_duplicate
+    calls = {"n": 0}
+
+    def find_once_blind(sess, p, *, now):  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        if calls["n"] == 1:
+            session.add(
+                RawMessage(
+                    id="winner",
+                    internet_message_id=parsed.internet_message_id,
+                    content_hash=parsed.content_hash,
+                    received_at=NOW,
+                    created_at=NOW,
+                    headers={},
+                )
+            )
+            session.flush()
+            return None  # we "saw" no duplicate before the other worker committed
+        return real_find(sess, p, now=now)
+
+    pipeline.find_duplicate = find_once_blind  # type: ignore[assignment]
+    try:
+        msg, is_new = pipeline.ingest_parsed(
+            session,
+            source_id=src_a.id,
+            provider_message_id="p1",
+            parsed=parsed,
+            blobs=blobs,
+        )
+    finally:
+        pipeline.find_duplicate = real_find  # type: ignore[assignment]
+
+    assert not is_new and msg.id == "winner"
+    assert session.scalar(select(func.count()).select_from(RawMessage)) == 1
+    link = session.scalars(select(MessageSource).where(MessageSource.source_id == src_a.id)).one()
+    assert link.message_id == "winner"
+    assert src_b is not None
+
+
+# ---------------------------------------------------------------- SPEC-10 F5
+
+
+def test_backfill_recovers_after_failed_job(session, ctx):
+    """The scheduler re-enqueues a backfill whose chained job exhausted its retries (SPEC-10 F5)."""
+    from bidtriage.core.models import Job
+    from bidtriage.worker.handlers import schedule_tick
+
+    src = _source(session)
+    src.backfill_done = False
+    session.flush()
+
+    # The chain is broken: the only chained key was already consumed and its job failed for good.
+    session.add(
+        Job(
+            kind="backfill_source",
+            key=f"backfill:{src.id}:0",
+            payload={"source_id": src.id},
+            status="failed",
+            run_at=NOW,
+            created_at=NOW,
+            attempts=3,
+        )
+    )
+    session.flush()
+
+    schedule_tick(session, ctx, now=NOW)
+    pending = [
+        j
+        for j in session.scalars(select(Job)).all()
+        if j.kind == "backfill_source" and j.status == "pending"
+    ]
+    assert pending, "the tick must recover a broken backfill chain"
+
+
+def test_backfill_stuck_is_surfaced(session, ctx):
+    src = _source(session)
+    src.backfill_done = False
+    session.flush()
+    impl = StubSource([[]], errors=["inbox: permission denied"])
+
+    for _ in range(ctx.settings.ingest_max_backfill_attempts):
+        ingest_job.run_backfill(session, src, impl, ctx)
+
+    assert src.backfill_stuck and src.backfill_attempts >= 20
+    assert "permission denied" in (src.backfill_last_error or "")
+
+    from bidtriage.worker.digest_job import health_lines
+
+    line = health_lines(session, NOW)[0]
+    assert "backfill stuck" in line.detail and line.status in ("degraded", "down")
+    # Stuck means stop trying, not retry forever.
+    before = src.backfill_attempts
+    ingest_job.run_backfill(session, src, impl, ctx)
+    assert src.backfill_attempts == before
+
+
+def test_seed_failure_finalises_poll_row(session, ctx):
+    """A failing seed must not leave a dangling poll row (SPEC-10 F5)."""
+
+    class BadSeed(StubSource):
+        def seed(self, state: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("network unreachable")
+
+    src = _source(session)
+    src.delta_state = {}
+    src.backfill_days = 90
+    session.flush()
+    with pytest.raises(RuntimeError):
+        ingest_job.run_poll(session, src, BadSeed([[]]), ctx)
+
+    poll = session.scalars(select(SourcePoll)).one()
+    assert poll.finished_at is not None
+    assert "network unreachable" in poll.errors[0]
+    assert src.status == "error" and src.last_success_at is None
+
+
+# ---------------------------------------------------------------- SPEC-10 F6
+
+
+def test_abandoned_poll_row_is_closed(session, ctx):
+    src = _source(session)
+    session.add(
+        SourcePoll(
+            id="dangling", source_id=src.id, mode="live", started_at=NOW - timedelta(hours=2)
+        )
+    )
+    fresh = SourcePoll(id="fresh", source_id=src.id, mode="live", started_at=NOW)
+    session.add(fresh)
+    session.flush()
+
+    assert ingest_job.close_abandoned_polls(session, now=NOW) == 1
+    closed = session.get(SourcePoll, "dangling")
+    assert closed is not None and closed.finished_at is not None
+    assert "abandoned" in closed.errors[0] and closed.error_count == 1
+    assert session.get(SourcePoll, "fresh").finished_at is None, "a running poll is left alone"
+
+
+def test_old_polls_are_pruned(session, ctx):
+    src = _source(session)
+    for i, age in enumerate([1, 10, 45, 90]):
+        session.add(
+            SourcePoll(
+                id=f"p{i}",
+                source_id=src.id,
+                mode="live",
+                started_at=NOW - timedelta(days=age),
+                finished_at=NOW - timedelta(days=age),
+            )
+        )
+    session.flush()
+    assert ingest_job.prune_polls(session, now=NOW, retention_days=30) == 2
+    assert session.scalar(select(func.count()).select_from(SourcePoll)) == 2
+
+
+def test_latest_poll_uses_a_limit(session, ctx):
+    src = _source(session)
+    for i in range(3):
+        session.add(
+            SourcePoll(
+                id=f"p{i}",
+                source_id=src.id,
+                mode="live",
+                started_at=NOW - timedelta(minutes=i * 5),
+                finished_at=NOW,
+                seen=i,
+            )
+        )
+    session.flush()
+    latest = ingest_job.latest_poll(session, src.id)
+    assert latest is not None and latest.id == "p0"
+
+
+# ---------------------------------------------------------------- SPEC-10 F7
+
+
+def test_transport_receipt_time_wins(session, ctx):
+    """Graph/IMAP receipt time beats the message's own Received: header (SPEC-10 F7)."""
+    transport = datetime(2026, 9, 29, 20, 45, tzinfo=UTC)
+    trace = datetime(2019, 1, 1, tzinfo=UTC)
+    got = pipeline.resolve_received_at(
+        transport=transport, trace=trace, now=NOW, floor=NOW - timedelta(days=90)
+    )
+    assert got == transport
+
+
+def test_received_at_is_clamped(session, ctx):
+    """A forged Received: header cannot push a message outside the believable window."""
+    floor = NOW - timedelta(days=90)
+    ancient = pipeline.resolve_received_at(
+        transport=None, trace=datetime(2019, 1, 1, tzinfo=UTC), now=NOW, floor=floor
+    )
+    assert ancient == floor
+    future = pipeline.resolve_received_at(
+        transport=None, trace=NOW + timedelta(days=365), now=NOW, floor=floor
+    )
+    assert future == NOW
+    assert pipeline.resolve_received_at(transport=None, trace=None, now=NOW, floor=floor) == NOW
+
+
+def test_forged_received_header_cannot_escape_the_dedupe_window(session, ctx):
+    """The clamp matters because received_at drives the 7-day dedupe window (SPEC-10 F7)."""
+    src = _source(session)
+    raw = (
+        b"Received: from evil by ferry.mail with SMTP id X; Tue, 1 Jan 2019 00:00:00 -0500\r\n"
+        b"Message-ID: <forged@gc.com>\r\nFrom: gc@example-gc.com\r\nSubject: ITB\r\n"
+        b"Date: Tue, 29 Sep 2026 16:45:00 -0400\r\n\r\nBids due 10/20.\r\n"
+    )
+    ingest_job.run_poll(session, src, StubSource([[("p1", raw)]]), ctx)
+    msg = session.scalars(select(RawMessage)).one()
+    from bidtriage.core.clock import aware
+
+    received = aware(msg.received_at)
+    assert received is not None and received.year >= 2026
+
+
+# ---------------------------------------------------------------- SPEC-10 F8
+
+
+def test_ingestion_metrics_at_volume(session, ctx):
+    """Aggregates only: the row-by-row version took seconds and hundreds of MB here (SPEC-10 F8)."""
+
+    src = _source(session)
+    body = "x" * 3000
+    for i in range(3000):
+        session.add(
+            RawMessage(
+                id=f"m{i}",
+                content_hash=f"h{i}",
+                subject="Newsletter",
+                body_text=body,
+                body_html=body,
+                headers={},
+                received_at=NOW - timedelta(seconds=30),
+                created_at=NOW,
+            )
+        )
+        session.add(
+            RawAttachment(
+                id=f"a{i}", message_id=f"m{i}", filename="x.pdf", sha256=f"{i:064d}", text="t"
+            )
+        )
+    session.add(
+        SourcePoll(
+            source_id=src.id,
+            mode="live",
+            started_at=NOW,
+            finished_at=NOW,
+            seen=3000,
+            new=3000,
+            error_count=0,
+        )
+    )
+    session.commit()
+    session.expunge_all()
+
+    started = time.perf_counter()
+    m = ingest_job.ingestion_metrics(session, now=NOW + timedelta(minutes=1))
+    elapsed = time.perf_counter() - started
+
+    assert m.messages_new == 3000 and m.attachments_extracted == 3000
+    assert m.lag_p50_seconds is not None and 25 <= m.lag_p50_seconds <= 120
+    # Nothing was hydrated into the identity map: no bodies were selected.
+    assert not any(isinstance(o, RawMessage) for o in session.identity_map.values())
+    assert elapsed < 1.0, f"metrics took {elapsed:.2f}s"
+
+
+def test_ingestion_metrics_counts_clock_skew(session, ctx):
+    session.add(
+        RawMessage(
+            id="skewed",
+            content_hash="h",
+            headers={},
+            received_at=NOW + timedelta(minutes=5),
+            created_at=NOW,
+        )
+    )
+    session.flush()
+    m = ingest_job.ingestion_metrics(session, now=NOW + timedelta(minutes=1))
+    assert m.clock_skew == 1
+
+
+def test_ingestion_metrics_cache(session, ctx):
+    src = _source(session)
+    ingest_job.run_poll(session, src, StubSource([[("p1", _eml("a@gc.com"))]]), ctx)
+    first = ingest_job.ingestion_metrics(session, now=NOW, cache_seconds=60)
+    ingest_job.run_poll(session, src, StubSource([[("p2", _eml("b@gc.com"))]]), ctx)
+    cached = ingest_job.ingestion_metrics(session, now=NOW, cache_seconds=60)
+    assert cached is first, "repeated admin refreshes must not recompute"
+    fresh = ingest_job.ingestion_metrics(session, now=NOW)
+    assert fresh.polls == 2
+
+
+# ---------------------------------------------------------------- SPEC-10 F10
+
+
+def test_alert_is_per_recipient(session, ctx):
+    """One bad address must not cause the whole alert to be re-sent to everyone (SPEC-10 F10)."""
+    session.add_all(
+        [
+            User(email="good@ferryelectric.com", name="Good", role="admin"),
+            User(email="bounce@ferryelectric.com", name="Bounce", role="chief"),
+        ]
+    )
+    src = _source(session)
+    src.last_success_at = NOW - timedelta(minutes=90)
+    session.flush()
+
+    sent: list[str] = []
+
+    def mailer(*, to: str, subject: str, html: str, text: str) -> str:
+        if to.startswith("bounce"):
+            raise RuntimeError("550 mailbox unavailable")
+        sent.append(to)
+        return "<id>"
+
+    ingest_job.check_sources(session, ctx, now=NOW, mailer=mailer)
+    assert sent == ["good@ferryelectric.com"]
+    assert src.down_alert_sent_at is not None, "delivery to one admin is enough to arm the alert"
+
+    ingest_job.check_sources(session, ctx, now=NOW, mailer=mailer)
+    assert sent == ["good@ferryelectric.com"], "not re-sent on the next sweep"
+
+
+def test_alert_not_armed_when_nothing_could_be_delivered(session, ctx):
+    session.add(User(email="admin@ferryelectric.com", name="Admin", role="admin"))
+    src = _source(session)
+    src.last_success_at = NOW - timedelta(minutes=90)
+    session.flush()
+
+    def broken(*, to: str, subject: str, html: str, text: str) -> str:
+        raise RuntimeError("smtp down")
+
+    ingest_job.check_sources(session, ctx, now=NOW, mailer=broken)
+    assert src.down_alert_sent_at is None, "retry the alert once SMTP recovers"

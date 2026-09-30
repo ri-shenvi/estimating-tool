@@ -1,6 +1,6 @@
 # SPEC-10: Ingestion Hardening
 
-**Status:** Draft · **Priority:** P0 · **Depends on:** SPEC-01 · **Feeds:** SPEC-09
+**Status:** Implemented · **Priority:** P0 · **Depends on:** SPEC-01 · **Feeds:** SPEC-09
 
 ## Problem
 
@@ -134,21 +134,21 @@ a single bad address no longer causes the entire alert to be re-sent to everyone
 
 ## Acceptance Criteria
 
-- [ ] Given a folder of 3 messages where fetching the first fails transiently, when the poller runs and then runs again after the failure clears, then all 3 messages exist and the cursor never skipped the first.
-- [ ] Given the same message failing 5 consecutive polls, when the limit is reached, then a `source_skips` row exists, the cursor advances, and the skip appears in the digest's Needs review section.
-- [ ] Given a batch of 20 messages each carrying a 3 MB attachment, when the poller runs, then peak process memory attributable to the batch stays under 64 MB.
-- [ ] Given a single message with a 180 MB attachment, when the poller runs, then it is processed alone and the poll reports `more_available=True`.
-- [ ] Given a Graph token that expires mid-run, when the next poll happens after expiry, then the token is refreshed transparently, the poll succeeds, `last_success_at` advances, and no down alert is sent.
-- [ ] Given a source whose `config_enc` is rewritten with new credentials, when the next poll runs in the same worker process, then the new credentials are used.
-- [ ] Given two concurrent transactions that both observe no duplicate for the same `Message-ID`, when both commit, then exactly one `raw_message` exists and the loser is linked as a duplicate with its own `message_sources` row.
-- [ ] Given a message reachable from three sources, when all three are polled in any order, then `copies` equals 3 and equals `count(distinct source_id)` over its `message_sources`.
-- [ ] Given a `backfill_source` job that fails until it exhausts `max_attempts`, when the scheduler next ticks, then a new backfill job is enqueued and the walk resumes.
-- [ ] Given 20 consecutive backfill failures, then the source shows `backfill_stuck` on the admin page and in the digest's System health section.
-- [ ] Given a worker killed mid-poll, when 30 minutes pass, then the abandoned `source_poll` row is closed with an `abandoned` error and is no longer shown as the source's latest poll.
-- [ ] Given an uploaded `.eml` with a `Received:` header dated 2019, when ingested, then `received_at` is clamped into the backfill window and the 7-day dedupe window behaves as if it arrived now.
-- [ ] Given 30,000 messages in the trailing window, when the admin page renders, then `ingestion_metrics` completes in under 100 ms and does not load message bodies.
-- [ ] Given an upload of 100 MiB, when posted, then the response is 413 and the process never holds the whole body.
-- [ ] Given a ZIP whose central directory understates a member's uncompressed size, when extracted, then the total cap still holds and the member is flagged rather than decompressed without limit.
+- [x] Given a folder of 3 messages where fetching the first fails transiently, when the poller runs and then runs again after the failure clears, then all 3 messages exist and the cursor never skipped the first.
+- [x] Given the same message failing 5 consecutive polls, when the limit is reached, then a `source_skips` row exists, the cursor advances, and the skip appears in the digest's Needs review section.
+- [x] Given a batch of 20 messages each carrying a 3 MB attachment, when the poller runs, then peak process memory attributable to the batch stays under 64 MB.
+- [x] Given a single message with a 180 MB attachment, when the poller runs, then it is processed alone and the poll reports `more_available=True`.
+- [x] Given a Graph token that expires mid-run, when the next poll happens after expiry, then the token is refreshed transparently, the poll succeeds, `last_success_at` advances, and no down alert is sent.
+- [x] Given a source whose `config_enc` is rewritten with new credentials, when the next poll runs in the same worker process, then the new credentials are used.
+- [x] Given two concurrent transactions that both observe no duplicate for the same `Message-ID`, when both commit, then exactly one `raw_message` exists and the loser is linked as a duplicate with its own `message_sources` row.
+- [x] Given a message reachable from three sources, when all three are polled in any order, then `copies` equals 3 and equals `count(distinct source_id)` over its `message_sources`.
+- [x] Given a `backfill_source` job that fails until it exhausts `max_attempts`, when the scheduler next ticks, then a new backfill job is enqueued and the walk resumes.
+- [x] Given 20 consecutive backfill failures, then the source shows `backfill_stuck` on the admin page and in the digest's System health section.
+- [x] Given a worker killed mid-poll, when 30 minutes pass, then the abandoned `source_poll` row is closed with an `abandoned` error and is no longer shown as the source's latest poll.
+- [x] Given an uploaded `.eml` with a `Received:` header dated 2019, when ingested, then `received_at` is clamped into the backfill window and the 7-day dedupe window behaves as if it arrived now.
+- [x] Given 30,000 messages in the trailing window, when the admin page renders, then `ingestion_metrics` completes in under 100 ms and does not load message bodies.
+- [x] Given an upload of 100 MiB, when posted, then the response is 413 and the process never holds the whole body.
+- [x] Given a ZIP whose central directory understates a member's uncompressed size, when extracted, then the total cap still holds and the member is flagged rather than decompressed without limit.
 
 ## Edge Cases and Required Tests
 

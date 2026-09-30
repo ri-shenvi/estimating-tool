@@ -2,11 +2,11 @@
 
 **Status:** Implemented · **Priority:** P0 · **Depends on:** none · **Feeds:** SPEC-02
 
-> A review of the implementation found defects that this spec's tests do not catch, including
-> silent message loss on transient fetch failures, unbounded worker memory, and a Graph token
-> that is never refreshed. They are specified for repair in
-> [SPEC-10](SPEC-10-ingestion-hardening.md); do not connect a production mailbox before its
-> Phase 1 lands.
+> A review of the implementation found defects this spec's tests do not catch — silent message loss
+> on transient fetch failures, unbounded worker memory, an unrefreshed Graph token, unenforced
+> deduplication. They are fixed under [SPEC-10](SPEC-10-ingestion-hardening.md), which also replaces
+> the source interface described below: sources now stream a `FetchSession` and the poller decides
+> when a cursor may advance.
 
 ## Problem
 

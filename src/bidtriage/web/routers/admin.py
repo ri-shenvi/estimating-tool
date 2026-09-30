@@ -9,14 +9,19 @@ from sqlalchemy.orm import Session
 
 from bidtriage.core.blobs import get_blob_store
 from bidtriage.core.clock import aware
+from bidtriage.core.config import get_settings
 from bidtriage.core.crypto import sha256_hex
-from bidtriage.core.models import GC, AuditEvent, ScoringProfile, Source, SourcePoll
+from bidtriage.core.models import GC, AuditEvent, ScoringProfile, Source
 from bidtriage.ingestion.health import source_health
 from bidtriage.ingestion.msg import parse_upload
 from bidtriage.scoring.profile import Profile
 from bidtriage.web.deps import CurrentUser, current_user, db, require_role
 from bidtriage.worker import pipeline
-from bidtriage.worker.ingest_job import ingestion_metrics
+from bidtriage.worker.ingest_job import (
+    ingestion_metrics,
+    latest_poll,
+    pending_skips,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -38,11 +43,8 @@ def home(
             "health": source_health(
                 last_success_at=aware(s.last_success_at), now=now, paused=s.paused
             ),
-            "last_poll": session.scalars(
-                select(SourcePoll)
-                .where(SourcePoll.source_id == s.id)
-                .order_by(SourcePoll.started_at.desc())
-            ).first(),
+            "last_poll": latest_poll(session, s.id),
+            "skips": len(pending_skips(session, source_id=s.id)),
         }
         for s in session.scalars(select(Source).order_by(Source.name)).all()
     ]
@@ -56,9 +58,27 @@ def home(
             "profiles": profiles,
             "gcs": gcs,
             "user": user,
-            "ingestion": ingestion_metrics(session, now=now),
+            "ingestion": ingestion_metrics(
+                session,
+                now=now,
+                cache_seconds=get_settings().ingest_metrics_cache_seconds,
+            ),
         },
     )
+
+
+async def _read_capped(file: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload in chunks, refusing oversize input before the whole body is resident (F9)."""
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1024 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(413, f"file exceeds the {max_bytes} byte upload limit")
+        chunks.append(chunk)
+    if not total:
+        raise HTTPException(400, "file is empty")
+    return b"".join(chunks)
 
 
 @router.post("/sources/{source_id}/pause")
@@ -94,10 +114,10 @@ async def upload_message(
     user: CurrentUser = Depends(require_role("admin", "chief", "estimator")),
 ):
     """Manual upload of an `.eml` or `.msg` file (SPEC-01 F1). Ingests through the normal pipeline."""
-    data = await file.read()
     name = file.filename or "upload.eml"
     if not name.lower().endswith((".eml", ".msg")):
         raise HTTPException(400, "upload an .eml or .msg file")
+    data = await _read_capped(file, get_settings().ingest_max_upload_bytes)
     try:
         parsed = parse_upload(name, data)
     except Exception as e:  # noqa: BLE001 - a malformed upload is a 400, not a 500

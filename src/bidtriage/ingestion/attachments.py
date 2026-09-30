@@ -19,6 +19,8 @@ LARGE_BYTES = 50 * 1024 * 1024
 OVERSIZE_BYTES = 200 * 1024 * 1024
 ZIP_MAX_FILES = 25
 ZIP_MAX_TOTAL = 200 * 1024 * 1024
+ZIP_MAX_LISTED = 1000
+"""Cap on listed entries: an archive with a million names must not become a million-line text."""
 OCR_MAX_PAGES = 20
 OCR_TIMEOUT_SECONDS = 60
 XLSX_MAX_SHEETS = 5
@@ -59,7 +61,7 @@ def sanitize_filename(name: str) -> str:
     return _UNSAFE.sub("_", name).strip() or "attachment"
 
 
-def sniff_mime(data: bytes, declared: str) -> str:
+def sniff_mime(data: bytes, declared: str, filename_hint: str = "") -> str:
     """Trust magic bytes over the declared type: portals send HTML redirects named `.pdf`."""
     head = data[:8]
     if head.startswith(b"%PDF"):
@@ -69,7 +71,8 @@ def sniff_mime(data: bytes, declared: str) -> str:
     if head.lstrip().lower().startswith((b"<!doctype html", b"<html")):
         return "text/html"
     if head.startswith(b"\xd0\xcf\x11\xe0"):
-        return "application/vnd.ms-outlook" if declared.endswith("outlook") else declared
+        # An OLE compound file: a .msg, or a legacy .doc/.xls we do not text-extract.
+        return "application/vnd.ms-outlook" if filename_hint.endswith(".msg") else declared
     return declared
 
 
@@ -214,10 +217,14 @@ def extract_zip(data: bytes) -> ExtractedText:
     listing: list[str] = []
     members: list[Member] = []
     total = 0
+    omitted = 0
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             for info in z.infolist():
                 if info.is_dir():
+                    continue
+                if len(listing) >= ZIP_MAX_LISTED:
+                    omitted += 1
                     continue
                 name = info.filename
                 lower = name.lower()
@@ -227,13 +234,31 @@ def extract_zip(data: bytes) -> ExtractedText:
                 listing.append(f"{name} ({info.file_size} bytes)")
                 if not lower.endswith((".pdf", ".docx", ".xlsx")):
                     continue
-                if len(members) >= ZIP_MAX_FILES or total + info.file_size > ZIP_MAX_TOTAL:
+                if len(members) >= ZIP_MAX_FILES or total >= ZIP_MAX_TOTAL:
                     continue
-                total += info.file_size
-                members.append(Member(sanitize_filename(name.rsplit("/", 1)[-1]), z.read(info)))
+                # `info.file_size` comes from the central directory and a hostile archive can
+                # understate it, so the cap is enforced while reading rather than before
+                # (SPEC-10 F9).
+                payload = _read_limited(z, info, ZIP_MAX_TOTAL - total)
+                if payload is None:
+                    listing[-1] = f"{name} (skipped: exceeds the {ZIP_MAX_TOTAL} byte budget)"
+                    continue
+                total += len(payload)
+                members.append(Member(sanitize_filename(name.rsplit("/", 1)[-1]), payload))
     except zipfile.BadZipFile:
         return ExtractedText(None, mime="application/zip", error="unreadable")
+    if omitted:
+        listing.append(f"... and {omitted} more entries not listed")
     return ExtractedText("\n".join(listing) or None, mime="application/zip", members=members)
+
+
+def _read_limited(z: zipfile.ZipFile, info: zipfile.ZipInfo, budget: int) -> bytes | None:
+    """Decompress one member, giving up if it exceeds `budget` regardless of its declared size."""
+    if budget <= 0:
+        return None
+    with z.open(info) as fh:
+        payload = fh.read(budget + 1)
+    return None if len(payload) > budget else payload
 
 
 def list_zip(data: bytes) -> list[tuple[str, bytes]]:
@@ -247,8 +272,8 @@ def extract(
     """Extract text for one attachment. Never raises: a bad file yields an `error` instead."""
     if len(data) > OVERSIZE_BYTES:
         return ExtractedText(None, mime=mime, oversize=True, error="oversize")
-    sniffed = sniff_mime(data, mime)
     lower = filename.lower()
+    sniffed = sniff_mime(data, mime, lower)
     if sniffed == "application/pdf":
         return extract_pdf_text(data, ocr=ocr)
     if sniffed == DOCX_MIME:

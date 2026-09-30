@@ -140,9 +140,13 @@ def poll_sources(
                 f"{src.name}: seen={summary.seen} new={summary.new} "
                 f"duplicates={summary.duplicates} errors={len(summary.errors)}"
             )
-            while not src.backfill_done:
+            while not src.backfill_done and not src.backfill_stuck:
                 back = ingest_job.run_backfill(s, src, impl, ctx)
                 typer.echo(f"{src.name}: backfill batch seen={back.seen} new={back.new}")
+                if not back.seen and not back.more_available:
+                    break
+            if src.backfill_stuck:
+                typer.echo(f"{src.name}: backfill stuck — {src.backfill_last_error}")
 
 
 @app.command("source-health")
@@ -175,7 +179,26 @@ def ingest_metrics(window_hours: int = 24) -> None:
     typer.echo(
         f"attachments: {m.attachments_extracted} extracted, {m.attachments_failed} not extracted"
     )
+    typer.echo(f"messages skipped (given up on): {m.messages_skipped}")
+    if m.clock_skew:
+        typer.echo(f"clock skew: {m.clock_skew} message(s) created before they were received")
     typer.echo(f"ingestion lag: p50 {m.lag_p50_seconds}s p95 {m.lag_p95_seconds}s")
+
+
+@app.command("ingest-skips")
+def ingest_skips(source: str | None = None) -> None:
+    """List messages ingestion gave up on, so the loss is never silent (SPEC-10 F1)."""
+    from bidtriage.core.db import session_scope
+    from bidtriage.worker.ingest_job import pending_skips
+
+    with session_scope() as s:
+        rows = pending_skips(s, source_id=source)
+        for r in rows:
+            typer.echo(
+                f"{r.source_id[:8]} {r.provider_message_id}: {r.attempts} attempts, "
+                f"last {r.last_attempt_at:%Y-%m-%d %H:%M} — {(r.last_error or '')[:120]}"
+            )
+        typer.echo(f"{len(rows)} message(s) skipped and unreviewed")
 
 
 @app.command("ingest-dir")

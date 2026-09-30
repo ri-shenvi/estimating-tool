@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     ingest_ocr: bool = Field(default=False, alias="INGEST_OCR")
     admin_alert_to: str | None = Field(default=None, alias="ADMIN_ALERT_TO")
 
+    # SPEC-10: ingestion hardening
+    ingest_max_batch_bytes: int = Field(default=256 * 1024 * 1024, alias="INGEST_MAX_BATCH_BYTES")
+    ingest_max_fetch_attempts: int = Field(default=5, alias="INGEST_MAX_FETCH_ATTEMPTS")
+    ingest_max_attachments_per_message: int = Field(
+        default=50, alias="INGEST_MAX_ATTACHMENTS_PER_MESSAGE"
+    )
+    ingest_max_backfill_attempts: int = Field(default=20, alias="INGEST_MAX_BACKFILL_ATTEMPTS")
+    ingest_poll_retention_days: int = Field(default=30, alias="INGEST_POLL_RETENTION_DAYS")
+    ingest_max_upload_bytes: int = Field(default=64 * 1024 * 1024, alias="INGEST_MAX_UPLOAD_BYTES")
+    ingest_metrics_cache_seconds: int = Field(default=60, alias="INGEST_METRICS_CACHE_SECONDS")
+
     @property
     def is_dev(self) -> bool:
         return self.env == "dev"

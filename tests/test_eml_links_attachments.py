@@ -348,3 +348,43 @@ def _with_attachment(filename: str, data: bytes):  # type: ignore[no-untyped-def
         f"Content-Transfer-Encoding: base64\r\n\r\n{encoded}\r\n--B--\r\n"
     ).encode()
     return parse_eml(raw)
+
+
+def test_zip_listing_is_bounded():
+    """An archive with a huge index must not become a huge text column (SPEC-10 F9)."""
+    from bidtriage.ingestion.attachments import ZIP_MAX_LISTED
+
+    payload = zip_bytes({f"sheet{i}.txt": b"x" for i in range(ZIP_MAX_LISTED + 500)})
+    out = extract("Index.zip", "application/zip", payload)
+    assert out.text is not None
+    lines = out.text.splitlines()
+    assert len(lines) == ZIP_MAX_LISTED + 1
+    assert lines[-1] == "... and 500 more entries not listed"
+
+
+def test_zip_declared_size_is_not_trusted():
+    """The total cap is enforced while decompressing, not from the central directory (SPEC-10 F9)."""
+    import io
+    import zipfile
+
+    from bidtriage.ingestion.attachments import extract_zip
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("small.pdf", b"%PDF-1.4" + b"\0" * 2048)
+        z.writestr("bomb.pdf", b"%PDF-1.4" + b"\0" * (4 * 1024 * 1024))
+    payload = buf.getvalue()
+
+    import bidtriage.ingestion.attachments as att
+
+    original = att.ZIP_MAX_TOTAL
+    att.ZIP_MAX_TOTAL = 1024 * 1024  # a budget smaller than the real payload
+    try:
+        out = extract_zip(payload)
+    finally:
+        att.ZIP_MAX_TOTAL = original
+
+    names = [m.filename for m in out.members]
+    assert "small.pdf" in names and "bomb.pdf" not in names
+    assert out.text is not None and "skipped: exceeds" in out.text
+    assert sum(len(m.data) for m in out.members) <= 1024 * 1024

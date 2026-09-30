@@ -56,9 +56,18 @@ def is_msg(data: bytes) -> bool:
     return data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
+class NotAnOutlookMessageError(ValueError):
+    pass
+
+
 def parse_msg(data: bytes) -> ParsedMessage:
     import olefile
 
+    if not is_msg(data):
+        # olefile would otherwise treat the bytes as a *filename* and raise a confusing ENOENT.
+        raise NotAnOutlookMessageError(
+            "not an Outlook .msg file (no compound-file signature); save it as .eml and retry"
+        )
     with olefile.OleFileIO(data) as ole:
         return parse_ole(ole)
 

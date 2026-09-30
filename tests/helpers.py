@@ -114,3 +114,20 @@ def zip_bytes(entries: dict[str, bytes]) -> bytes:
         for name, data in entries.items():
             z.writestr(name, data)
     return buf.getvalue()
+
+
+def drain(fetch_session, *, fails: set[str] | None = None) -> tuple[list[str], dict]:
+    """Iterate a FetchSession the way run_poll does: store each message, report the outcome.
+
+    `fails` names provider ids whose *store* should fail, so tests can exercise cursor safety
+    without a database.
+    """
+    fails = fails or set()
+    stored: list[str] = []
+    for item in fetch_session:
+        pid = item.provider_message_id
+        ok = pid not in fails
+        fetch_session.record(pid, stored=ok, error=None if ok else "store failed")
+        if ok:
+            stored.append(pid)
+    return stored, fetch_session.new_state()

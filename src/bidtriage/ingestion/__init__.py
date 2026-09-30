@@ -12,16 +12,27 @@ from bidtriage.ingestion.eml import ParsedAttachment, ParsedMessage, parse_eml, 
 from bidtriage.ingestion.health import SourceHealth, source_health
 from bidtriage.ingestion.links import classify_host, harvest_links
 from bidtriage.ingestion.msg import is_msg, parse_msg, parse_upload
-from bidtriage.ingestion.protocol import BackfillableSource, MailSource, PollResult
+from bidtriage.ingestion.protocol import (
+    BackfillableSource,
+    FetchedMessage,
+    FetchOptions,
+    FetchSession,
+    MailSource,
+    PollSummary,
+    supports_backfill,
+)
 
 __all__ = [
     "BackfillableSource",
     "ExtractedText",
+    "FetchOptions",
+    "FetchSession",
+    "FetchedMessage",
     "MailSource",
     "Member",
     "ParsedAttachment",
     "ParsedMessage",
-    "PollResult",
+    "PollSummary",
     "SourceHealth",
     "classify_host",
     "extract",
@@ -35,4 +46,5 @@ __all__ = [
     "sanitize_filename",
     "sniff_mime",
     "source_health",
+    "supports_backfill",
 ]

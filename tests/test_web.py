@@ -190,3 +190,45 @@ def test_admin_can_pause_and_resume_a_source(client, session):  # type: ignore[n
             follow_redirects=False,
         )
         assert r.status_code == 303 and src.paused is expected
+
+
+def test_upload_size_cap(client, session, monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
+    """An oversize upload is refused with 413 before the whole body is resident (SPEC-10 F9)."""
+    from bidtriage.core.blobs import LocalBlobStore
+    from bidtriage.core.config import Settings
+
+    _seed(session)
+    monkeypatch.setattr(
+        "bidtriage.web.routers.admin.get_blob_store", lambda: LocalBlobStore(tmp_path / "blobs")
+    )
+    monkeypatch.setattr(
+        "bidtriage.web.routers.admin.get_settings",
+        lambda: Settings(SECRET_KEY=SECRET, BIDTRIAGE_ENV="dev", INGEST_MAX_UPLOAD_BYTES=4096),
+    )
+    body = b"Message-ID: <big@gc.com>\r\nFrom: gc@x.com\r\nSubject: ITB\r\n\r\n" + b"x" * 20000
+    r = client.post(
+        "/admin/upload",
+        files={"file": ("big.eml", body, "message/rfc822")},
+        headers={"X-Dev-User": "casey@example.com"},
+    )
+    assert r.status_code == 413
+    from sqlalchemy import select
+
+    from bidtriage.core.models import RawMessage
+
+    assert session.scalars(select(RawMessage)).all() == []
+
+
+def test_upload_rejects_empty_file(client, session, monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
+    from bidtriage.core.blobs import LocalBlobStore
+
+    _seed(session)
+    monkeypatch.setattr(
+        "bidtriage.web.routers.admin.get_blob_store", lambda: LocalBlobStore(tmp_path / "blobs")
+    )
+    r = client.post(
+        "/admin/upload",
+        files={"file": ("empty.eml", b"", "message/rfc822")},
+        headers={"X-Dev-User": "casey@example.com"},
+    )
+    assert r.status_code == 400

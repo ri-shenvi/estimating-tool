@@ -43,4 +43,25 @@ Failure signatures: `AADSTS7000222` = expired secret (step 3); `ErrorAccessDenie
 A source with no successful poll for 30 minutes is `degraded` and for 60 minutes is `down`. Going
 `down` sends one alert email (to `ADMIN_ALERT_TO`, else the admin and chief users) and shows in the
 next digest's System health section; the alert re-arms only after the source recovers, so a long
-outage does not mail every five minutes.
+outage does not mail every five minutes. Reaching the mailbox counts as a successful poll even if
+individual messages were unreadable — otherwise one bad attachment would report a healthy mailbox as
+down.
+
+## Messages that could not be ingested
+
+A message that fails to fetch or store stays in front of the source cursor and is retried on the
+next poll, so a transient Graph 503 or IMAP `NO` never loses it. After
+`INGEST_MAX_FETCH_ATTEMPTS` (default 5) consecutive failures it is recorded in `source_skips`, the
+cursor is allowed past it, and it appears in the digest's Needs review section and on the admin page:
+
+```bash
+uv run bidtriage ingest-skips          # what was given up on, and why
+```
+
+Investigate with the provider message id from that listing. Once the cause is fixed, delete the
+`source_skips` row and the message is picked up again the next time the folder is rescanned (a
+`UIDVALIDITY` change on IMAP, or a 410-triggered delta resync on Graph).
+
+If `bidtriage source-health` reports `backfill stuck`, the first-connection history walk failed
+`INGEST_MAX_BACKFILL_ATTEMPTS` (default 20) times; `sources.backfill_last_error` holds the reason.
+Clear `backfill_stuck` once fixed and the scheduler resumes the walk within five minutes.

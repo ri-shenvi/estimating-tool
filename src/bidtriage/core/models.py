@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -66,6 +67,9 @@ class Source(Base):
     # SPEC-01 F7: first-connection backfill, oldest-first, rate-limited behind live polls.
     backfill_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     backfill_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    backfill_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    backfill_last_error: Mapped[str | None] = mapped_column(Text)
+    backfill_stuck: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # SPEC-01 F8: the alert for a `down` source fires once per outage, not once per poll.
     down_alert_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -80,7 +84,28 @@ class SourcePoll(Base):
     seen: Mapped[int] = mapped_column(Integer, default=0)
     new: Mapped[int] = mapped_column(Integer, default=0)
     duplicates: Mapped[int] = mapped_column(Integer, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     errors: Mapped[list[Any]] = mapped_column(JSONType, nullable=False, default=list)
+    __table_args__ = (Index("ix_source_polls_source_started", "source_id", "started_at"),)
+
+
+class SourceSkip(Base):
+    """A message ingestion could not fetch or store, kept so the loss is visible (SPEC-10 F1).
+
+    Rows appear only after `INGEST_MAX_FETCH_ATTEMPTS` consecutive failures, at which point the
+    source cursor is allowed past the message and it is surfaced for review.
+    """
+
+    __tablename__ = "source_skips"
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), primary_key=True)
+    provider_message_id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    first_seen_at: Mapped[datetime] = _ts()
+    last_attempt_at: Mapped[datetime] = _ts()
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    given_up: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RawMessage(Base):
@@ -107,6 +132,7 @@ class RawMessage(Base):
     forward_note: Mapped[str | None] = mapped_column(Text)
     forward_chain: Mapped[list[Any]] = mapped_column(JSONType, nullable=False, default=list)
     copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    attachments_truncated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     kind: Mapped[str | None] = mapped_column(String(30), index=True)
     kind_confidence: Mapped[float | None] = mapped_column(Float)
     extraction_status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
@@ -114,7 +140,17 @@ class RawMessage(Base):
 
     attachments: Mapped[list[RawAttachment]] = relationship(back_populates="message")
 
-    __table_args__ = (Index("ix_raw_messages_hash_received", "content_hash", "received_at"),)
+    __table_args__ = (
+        Index("ix_raw_messages_hash_received", "content_hash", "received_at"),
+        # Partial so the many messages with no Message-ID header do not collide with each other.
+        Index(
+            "uq_raw_messages_internet_message_id",
+            "internet_message_id",
+            unique=True,
+            postgresql_where=text("internet_message_id IS NOT NULL"),
+            sqlite_where=text("internet_message_id IS NOT NULL"),
+        ),
+    )
 
 
 class MessageSource(Base):

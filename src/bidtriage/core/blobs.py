@@ -7,6 +7,7 @@ attachment sent to four estimators is stored once.
 from __future__ import annotations
 
 import os
+import secrets
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -38,9 +39,16 @@ class LocalBlobStore:
         if path.exists():
             return key
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-        tmp.write_bytes(data)
-        tmp.replace(path)
+        # A unique suffix per writer: two threads in one process would otherwise share a temp name.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp.replace(path)
+        finally:
+            tmp.unlink(missing_ok=True)
         return key
 
     def get(self, key: str) -> bytes:
@@ -78,8 +86,13 @@ class S3BlobStore:
 
         try:
             self._s3.head_object(Bucket=self.bucket, Key=self._name(key))
-        except ClientError:
-            return False
+        except ClientError as e:
+            # Only a genuine 404 means absent. Treating a permissions error as "absent" would
+            # silently re-upload on every message and hide a misconfigured bucket policy.
+            status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if status == 404 or e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+                return False
+            raise
         return True
 
 

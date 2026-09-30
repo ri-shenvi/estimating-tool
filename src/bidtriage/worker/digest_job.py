@@ -29,6 +29,7 @@ from bidtriage.digest.sender import send_email
 from bidtriage.digest.snapshot import DigestItem, HealthLine, ReviewItem, assemble
 from bidtriage.ingestion.health import OK, source_health
 from bidtriage.scoring.engine import ScoreResult
+from bidtriage.worker.ingest_job import pending_skips
 
 
 def _calendar_url(session: Session, user: User, base_url: str) -> str:
@@ -171,8 +172,20 @@ def health_lines(session: Session, now: datetime) -> list[HealthLine]:
     out = []
     for s in session.scalars(select(Source)).all():
         h = source_health(last_success_at=aware(s.last_success_at), now=now, paused=s.paused)
+        detail = "" if h.status == OK else h.detail
+        if s.backfill_stuck:
+            # SPEC-10 F5: a backfill that cannot progress must not stay invisible.
+            detail = (
+                f"{detail + '; ' if detail else ''}backfill stuck: {s.backfill_last_error or ''}"[
+                    :200
+                ]
+            )
         out.append(
-            HealthLine(name=s.name, status=h.status, detail="" if h.status == OK else h.detail)
+            HealthLine(
+                name=s.name,
+                status="degraded" if h.status == OK and s.backfill_stuck else h.status,
+                detail=detail,
+            )
         )
     return out
 
@@ -198,6 +211,16 @@ def review_items(session: Session, base_url: str) -> list[ReviewItem]:
             ReviewItem(
                 kind="low_confidence_kind",
                 title=f"{m.subject[:70]} ({m.kind})",
+                url=f"{base_url}/admin/",
+            )
+        )
+    for skip in pending_skips(session):
+        # SPEC-10 F1: a message ingestion gave up on is a review item, not a silent gap.
+        out.append(
+            ReviewItem(
+                kind="ingest_skipped",
+                title=f"could not ingest {skip.provider_message_id} after "
+                f"{skip.attempts} attempts: {(skip.last_error or '')[:80]}",
                 url=f"{base_url}/admin/",
             )
         )

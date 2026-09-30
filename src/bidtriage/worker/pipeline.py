@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from bidtriage.core.blobs import BlobStore
@@ -59,22 +60,76 @@ from bidtriage.scoring.snapshot import CalendarSnapshot, GCSnapshot, Opportunity
 # ---------------------------------------------------------------- ingestion
 
 DEDUPE_WINDOW_DAYS = 7
+MAX_ATTACHMENTS = 50
+"""Default cap on attachment rows per message; the caller normally passes the configured value."""
 
 
 def find_duplicate(session: Session, parsed: ParsedMessage, *, now: datetime) -> RawMessage | None:
-    """The two content-based duplicate rules of SPEC-01 F3 (the provider-id rule is per-source)."""
+    """The two content-based duplicate rules of SPEC-01 F3 (the provider-id rule is per-source).
+
+    Both queries take the earliest match so the link target is deterministic when several rows
+    qualify (SPEC-10 F4).
+    """
     if parsed.internet_message_id:
-        dupe = session.scalar(
-            select(RawMessage).where(RawMessage.internet_message_id == parsed.internet_message_id)
-        )
+        dupe = session.scalars(
+            select(RawMessage)
+            .where(RawMessage.internet_message_id == parsed.internet_message_id)
+            .order_by(RawMessage.received_at.asc())
+            .limit(1)
+        ).first()
         if dupe is not None:
             return dupe
     window = now - timedelta(days=DEDUPE_WINDOW_DAYS)
-    return session.scalar(
-        select(RawMessage).where(
-            RawMessage.content_hash == parsed.content_hash, RawMessage.received_at >= window
+    return session.scalars(
+        select(RawMessage)
+        .where(RawMessage.content_hash == parsed.content_hash, RawMessage.received_at >= window)
+        .order_by(RawMessage.received_at.asc())
+        .limit(1)
+    ).first()
+
+
+def resolve_received_at(
+    *,
+    transport: datetime | None,
+    trace: datetime | None,
+    now: datetime,
+    floor: datetime | None = None,
+) -> datetime:
+    """When we received a message (SPEC-10 F7).
+
+    A transport-supplied time (Graph `receivedDateTime`, IMAP `INTERNALDATE`) is authoritative. The
+    message's own `Received:` header is sender-controllable, so it is only a fallback for uploaded
+    files and is clamped into the window ingestion is willing to believe — it feeds the 7-day dedupe
+    window and the lag metric.
+    """
+    if transport is not None:
+        return min(transport, now)
+    if trace is None:
+        return now
+    if floor is not None and trace < floor:
+        return floor
+    return min(trace, now)
+
+
+def refresh_copies(session: Session, message_id: str) -> int:
+    """Recompute `copies` from the recipient paths on record (SPEC-10 F4).
+
+    Derived in one place rather than incremented at each call site, so the counter cannot drift from
+    `message_sources`.
+    """
+    count = (
+        session.scalar(
+            select(func.count(func.distinct(MessageSource.source_id))).where(
+                MessageSource.message_id == message_id
+            )
         )
+        or 0
     )
+    msg = session.get(RawMessage, message_id)
+    if msg is not None:
+        msg.copies = max(count, 1)
+        return msg.copies
+    return count
 
 
 def ingest_parsed(
@@ -87,6 +142,8 @@ def ingest_parsed(
     clock: Clock | None = None,
     ocr: bool | OcrBackend | None = False,
     blobs: BlobStore | None = None,
+    received_at: datetime | None = None,
+    max_attachments: int | None = None,
 ) -> tuple[RawMessage, bool]:
     """Store a parsed message idempotently (SPEC-01 F2/F3/F5/F6). Returns (message, is_new)."""
     clock = clock or SystemClock()
@@ -104,26 +161,13 @@ def ingest_parsed(
 
     dupe = find_duplicate(session, parsed, now=now)
     if dupe is not None:
-        # Linked, not re-created: one opportunity even when the GC CC'd four people (SPEC-01 F3).
-        # `copies` counts recipient paths, so a folder re-scan that hands the same mailbox a new
-        # provider id (an IMAP UIDVALIDITY reset) records the id without inflating the count.
-        already_from_this_source = session.scalar(
-            select(MessageSource).where(
-                MessageSource.message_id == dupe.id, MessageSource.source_id == source_id
-            )
-        )
-        if already_from_this_source is None:
-            dupe.copies += 1
-        session.add(
-            MessageSource(
-                message_id=dupe.id,
-                source_id=source_id,
-                provider_message_id=provider_message_id,
-                recipient_path=recipient_path,
-            )
-        )
-        session.flush()
-        return dupe, False
+        return _link_duplicate(
+            session,
+            dupe,
+            source_id=source_id,
+            provider_message_id=provider_message_id,
+            recipient_path=recipient_path,
+        ), False
 
     forwarder = _forwarding_user(session, parsed.forwarded_by)
     msg = RawMessage(
@@ -136,7 +180,7 @@ def ingest_parsed(
         subject=parsed.subject,
         sent_at=parsed.sent_at,
         sent_at_confidence=parsed.sent_at_confidence,
-        received_at=parsed.received_at or now,
+        received_at=received_at or parsed.received_at or now,
         body_text=parsed.body_text,
         body_html=parsed.body_html,
         body_trimmed=parsed.body_trimmed,
@@ -149,8 +193,24 @@ def ingest_parsed(
         forward_chain=parsed.forward_chain,
         created_at=now,
     )
-    session.add(msg)
-    session.flush()
+    try:
+        # The read above is the fast path; the partial unique index on internet_message_id is the
+        # backstop when two workers race on the same message (SPEC-10 F4). A savepoint keeps the
+        # rest of the transaction usable when it fires.
+        with session.begin_nested():
+            session.add(msg)
+            session.flush()
+    except IntegrityError:
+        winner = find_duplicate(session, parsed, now=now)
+        if winner is None:
+            raise
+        return _link_duplicate(
+            session,
+            winner,
+            source_id=source_id,
+            provider_message_id=provider_message_id,
+            recipient_path=recipient_path,
+        ), False
     session.add(
         MessageSource(
             message_id=msg.id,
@@ -159,7 +219,11 @@ def ingest_parsed(
             recipient_path=recipient_path,
         )
     )
-    attachment_texts = _store_attachments(session, msg, parsed, ocr=ocr, blobs=blobs)
+    session.flush()
+    refresh_copies(session, msg.id)
+    attachment_texts = _store_attachments(
+        session, msg, parsed, ocr=ocr, blobs=blobs, max_attachments=max_attachments
+    )
     # SPEC-01 F6: URLs come from the body *and* the attachments (the ITB letter holds the plan-room
     # link as often as the email does).
     for link in harvest_links(parsed.body_text, parsed.body_html, *attachment_texts):
@@ -176,6 +240,33 @@ def ingest_parsed(
     return msg, True
 
 
+def _link_duplicate(
+    session: Session,
+    dupe: RawMessage,
+    *,
+    source_id: str,
+    provider_message_id: str,
+    recipient_path: str,
+) -> RawMessage:
+    """Record another path to a message we already have (SPEC-01 F3): linked, not re-created.
+
+    One opportunity even when the GC CC'd four people, and `copies` is recomputed from the distinct
+    sources so a folder re-scan handing the same mailbox a new provider id cannot inflate it.
+    """
+    session.add(
+        MessageSource(
+            message_id=dupe.id,
+            source_id=source_id,
+            provider_message_id=provider_message_id,
+            recipient_path=recipient_path,
+        )
+    )
+    session.flush()
+    refresh_copies(session, dupe.id)
+    session.flush()
+    return dupe
+
+
 def _forwarding_user(session: Session, address: str | None) -> User | None:
     """The forwarder becomes the default assignee suggestion downstream (SPEC-01 F4)."""
     if not address:
@@ -190,16 +281,31 @@ def _store_attachments(
     *,
     ocr: bool | OcrBackend | None,
     blobs: BlobStore | None,
+    max_attachments: int | None = None,
 ) -> list[str]:
-    """Persist attachments and any container members (SPEC-01 F5). Returns their extracted texts."""
+    """Persist attachments and any container members (SPEC-01 F5). Returns their extracted texts.
+
+    Bounded by `max_attachments` so one pathological message cannot write thousands of rows
+    (SPEC-10 F2); the overflow is counted on the message for review.
+    """
+    cap = max_attachments if max_attachments is not None else MAX_ATTACHMENTS
     texts: list[str] = []
+    stored = 0
+    truncated = 0
     for a in parsed.attachments:
+        if stored >= cap:
+            truncated += 1
+            continue
         row = _store_attachment(
             session, msg, a.filename, a.mime, a.data, parent_id=None, ocr=ocr, blobs=blobs
         )
+        stored += 1
         if row.text:
             texts.append(row.text)
         for member in _members(a.filename, a.mime, a.data):
+            if stored >= cap:
+                truncated += 1
+                continue
             child = _store_attachment(
                 session,
                 msg,
@@ -210,8 +316,11 @@ def _store_attachments(
                 ocr=ocr,
                 blobs=blobs,
             )
+            stored += 1
             if child.text:
                 texts.append(child.text)
+    if truncated:
+        msg.attachments_truncated = truncated
     return texts
 
 
