@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}bidtriage{% endblock %}</title>
+<style>
+body{font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222;margin:0;background:#fafafa}
+header{background:#0b3d91;color:#fff;padding:10px 16px;display:flex;gap:16px;align-items:center}
+header a{color:#fff;text-decoration:none;font-weight:600}
+main{max-width:1100px;margin:16px auto;padding:0 16px}
+table{border-collapse:collapse;width:100%;background:#fff}
+th,td{border-bottom:1px solid #e5e5e5;padding:6px 8px;text-align:left;vertical-align:top}
+.band-bid{color:#1a7f37;font-weight:700}.band-consider{color:#b26a00;font-weight:700}.band-likely_pass,.band-pass{color:#777}
+.chip{display:inline-block;padding:0 6px;border:1px solid #bbb;border-radius:8px;font-size:11px;margin-right:4px}
+.card{background:#fff;border:1px solid #ddd;padding:12px;margin-bottom:12px}
+button,.btn{padding:6px 12px;border:1px solid #0b3d91;background:#fff;color:#0b3d91;border-radius:3px;cursor:pointer}
+button.primary{background:#0b3d91;color:#fff}
+form.inline{display:inline}
+</style></head>
+<body><header><a href="/">bidtriage</a><a href="/?status=bidding">Bidding</a><a href="/?status=undecided">Undecided</a><a href="/admin/">Admin</a><a href="/api/docs">API</a><span style="margin-left:auto">{{ user.name if user else '' }} ({{ user.role if user else '' }})</span></header>
+<main>{% block content %}{% endblock %}</main></body></html>

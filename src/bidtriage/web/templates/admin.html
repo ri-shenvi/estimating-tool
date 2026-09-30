@@ -1,0 +1,19 @@
+{% extends "base.html" %}{% block title %}Admin{% endblock %}
+{% block content %}
+<h1>Admin</h1>
+<div class="card"><h2>Sources</h2>
+<table><tr><th>Name</th><th>Kind</th><th>Status</th><th>Last success</th><th>Paused</th></tr>
+{% for s in sources %}<tr><td>{{ s.name }}</td><td>{{ s.kind }}</td><td>{{ s.status }}</td><td>{{ s.last_success_at or 'never' }}</td><td>{{ s.paused }}</td></tr>{% else %}<tr><td colspan="5">No sources. Add one with <code>bidtriage add-source</code> (see docs/runbooks).</td></tr>{% endfor %}
+</table></div>
+<div class="card"><h2>Scoring profiles</h2>
+<table><tr><th>v</th><th>Name</th><th>Active</th><th>Note</th><th></th></tr>
+{% for p in profiles %}<tr><td>{{ p.version }}</td><td>{{ p.json.name }}</td><td>{{ '✓' if p.active else '' }}</td><td>{{ p.note }}</td><td>{% if not p.active %}<form class="inline" method="post" action="/admin/profiles/{{ p.version }}/activate"><button>Activate</button></form>{% endif %}</td></tr>{% endfor %}
+</table>
+<details><summary>New profile (JSON)</summary><form method="post" action="/admin/profiles"><textarea name="json_body" rows="12" style="width:100%"></textarea><br><input name="note" placeholder="note"> <button>Save draft</button></form></details>
+</div>
+<div class="card"><h2>GC directory</h2>
+<table><tr><th>GC</th><th>Tier</th><th>Domains</th><th>Set tier</th></tr>
+{% for g in gcs %}<tr><td>{{ g.canonical_name }}</td><td>{{ g.tier }}</td><td>{{ g.domains|map(attribute='domain')|join(', ') }}</td>
+<td><form class="inline" method="post" action="/admin/gcs/{{ g.id }}/tier"><select name="tier">{% for t in ['A','B','C','D','blocked','unknown'] %}<option {{ 'selected' if t == g.tier }}>{{ t }}</option>{% endfor %}</select> <input name="reason" placeholder="reason" size="18"> <button>Save</button></form></td></tr>{% endfor %}
+</table></div>
+{% endblock %}

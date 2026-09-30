@@ -1,0 +1,17 @@
+{% extends "base.html" %}{% block title %}Opportunities{% endblock %}
+{% block content %}
+<h1>Opportunities {% if status %}· {{ status }}{% endif %}{% if band %}· {{ band }}{% endif %}</h1>
+<table><tr><th>Score</th><th>Project</th><th>GC</th><th>Type</th><th>Due</th><th>Status</th><th>Flags</th></tr>
+{% for r in rows %}
+<tr>
+<td class="band-{{ r.score.band if r.score else 'pass' }}">{{ r.score.score if r.score else '—' }}</td>
+<td><a href="/opportunities/{{ r.o.id }}">{{ (r.o.canonical.project_name or {}).value or 'Untitled' }}</a></td>
+<td>{{ (r.o.canonical.gc_name or {}).value or '' }}</td>
+<td>{{ (r.o.canonical.project_type or 'unknown')|replace('_',' ') }}</td>
+<td>{{ ((r.o.canonical.bid_due or {}).value or 'unknown')[:16] }}</td>
+<td>{{ r.o.status }}</td>
+<td>{% for f in r.o.flags %}<span class="chip">{{ f|replace('_',' ') }}</span>{% endfor %}</td>
+</tr>
+{% else %}<tr><td colspan="7">No opportunities yet. Run <code>bidtriage ingest-dir tests/fixtures/messages --fake</code> to load samples.</td></tr>{% endfor %}
+</table>
+{% endblock %}

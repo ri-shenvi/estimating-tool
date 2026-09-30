@@ -1,0 +1,39 @@
+{% extends "base.html" %}{% block title %}{{ (o.canonical.project_name or {}).value }}{% endblock %}
+{% block content %}
+{% set c = o.canonical %}
+<h1>{{ (c.project_name or {}).value or 'Untitled' }} <small>· {{ o.status }}</small></h1>
+<div class="card">
+<p><b>GC:</b> {{ (c.gc_name or {}).value }} · <b>Owner:</b> {{ (c.owner_name or {}).value or '—' }} · <b>Type:</b> {{ (c.project_type or 'unknown')|replace('_',' ') }} · <b>Bid type:</b> {{ c.bid_type }} · <b>Sector:</b> {{ c.sector }}</p>
+<p><b>Bid due:</b> {{ (c.bid_due or {}).value or 'unknown' }} <small title="{{ (c.bid_due or {}).source }}">(conf {{ (c.bid_due or {}).confidence }})</small>
+ · <b>Pre-bid:</b> {{ (c.prebid or {}).value or '—' }}{% if (c.prebid or {}).mandatory %} <b>MANDATORY</b>{% endif %} · <b>RFIs due:</b> {{ (c.rfi_deadline or {}).value or '—' }}</p>
+<p><b>Location:</b> {{ (c.location or {}).raw or '—' }} · <b>Size:</b> {{ c.size_signals }}</p>
+<p><b>Scope:</b> {{ c.summary }}</p>
+<p><b>Scope items:</b> {% for s in c.scope_items or [] %}<span class="chip">{{ s|replace('_',' ') }}</span>{% endfor %} <b>Exclusions:</b> {{ c.exclusions_text or '—' }}</p>
+<p><b>Flags:</b> {% for f in o.flags %}<span class="chip">{{ f|replace('_',' ') }}</span>{% endfor %}</p>
+<p><b>Documents:</b> {% for l in c.document_links or [] %}<a href="{{ l.url }}">{{ l.host_class }}</a> {% endfor %}</p>
+</div>
+{% if score %}
+<div class="card"><h2>Score {{ score.score }} · <span class="band-{{ score.band }}">{{ score.band }}</span> <small>(profile v{{ score.profile_version }})</small></h2>
+<table><tr><th>Factor</th><th>Weight</th><th>Value</th><th>Contribution</th><th>Reason</th></tr>
+{% for f in score.explanation.contributions %}<tr><td>{{ f.factor }}</td><td>{{ f.weight }}</td><td>{{ '%.2f'|format(f.value) }}</td><td>{{ '%.1f'|format(f.contribution) }}</td><td>{{ f.reason }}</td></tr>{% endfor %}
+</table>
+{% if score.explanation.boosts %}<p><b>Boosts:</b> {% for b in score.explanation.boosts %}+{{ b.amount }} {{ b.reason }}; {% endfor %}</p>{% endif %}
+{% if score.explanation.caps %}<p><b>Caps:</b> {% for b in score.explanation.caps %}≤{{ b.amount }} {{ b.reason }}; {% endfor %}</p>{% endif %}
+{% if score.explanation.warnings %}<p><b>Verify:</b> {{ score.explanation.warnings|join('; ') }}</p>{% endif %}
+{% if score.explanation.missing_inputs %}<p><b>Missing:</b> {{ score.explanation.missing_inputs|join(', ') }}</p>{% endif %}
+</div>
+{% endif %}
+<div class="card"><h2>Actions</h2>
+{% for a in ['bid','pass','snooze','submit','won','lost','reopen','archive'] %}
+<form class="inline" method="post" action="/api/opportunities/{{ o.id }}/actions" onsubmit="event.preventDefault();fetch(this.action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'{{ a }}'})}).then(r=>r.ok?location.reload():r.json().then(j=>alert(j.detail)))"><button>{{ a }}</button></form>
+{% endfor %}
+</div>
+<div class="card"><h2>History</h2>
+<table><tr><th>When</th><th>Field</th><th>Old</th><th>New</th><th>Applied</th></tr>
+{% for h in history %}<tr><td>{{ h.changed_at }}</td><td>{{ h.field }}</td><td>{{ h.old }}</td><td>{{ h.new }}</td><td>{{ 'yes' if h.applied else 'no (locked)' }}</td></tr>{% endfor %}
+</table>
+<h3>Decisions</h3>
+<table><tr><th>When</th><th>Action</th><th>By</th><th>Channel</th><th>Reason</th></tr>
+{% for d in decisions %}<tr><td>{{ d.created_at }}</td><td>{{ d.action }}</td><td>{{ d.actor_user_id or 'system' }}</td><td>{{ d.channel }}</td><td>{{ d.reason or '' }} {{ d.note or '' }}</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

@@ -1,0 +1,73 @@
+BIDS - {{ now|fmt_dt(none, false) }}
+Good morning, {{ s.recipient_name }}.
+{% if s.quiet %}
+Quiet morning. {{ s.in_progress_count }} bids in progress{% if s.next_due %}; next due {{ s.next_due.bid_due|fmt_dt(now, s.next_due.bid_due_time_known) }} ({{ s.next_due.project_name }}){% endif %}.
+{% else %}
+{{ s.counts.new }} new | {{ s.counts.due_this_week }} due this week | {{ s.counts.changed }} changed | {{ s.counts.needs_decision }} need your decision | mailbox {{ 'DEGRADED' if s.degraded else 'OK' }}
+{% endif %}
+{% if s.degraded %}
+
+SYSTEM HEALTH
+{% for h in s.health if h.status != 'ok' %}- {{ h.name }}: {{ h.status }} - {{ h.detail }}
+{% endfor %}
+{% endif %}
+{% for it in s.prebid_today %}
+!! Pre-bid TODAY {{ it.prebid_at|fmt_dt(now) }}{% if it.prebid_mandatory %} (mandatory){% endif %}: {{ it.project_name }} - {{ it.gc_name }}
+{% endfor %}
+{% macro line(it) %}
+[{{ it.score }} {{ it.band|band_label }}]{% if it.is_new %} NEW{% endif %} {{ it.project_name }} ({{ it.project_type|humanize }})
+  GC: {{ it.gc_name or 'Unknown' }}{% if it.gc_tier != 'unknown' %} (Tier {{ it.gc_tier }}){% endif %}{% if it.location_short %} | {{ it.location_short }}{% endif %}{% if it.distance_miles is not none %}, {{ it.distance_miles|round|int }} mi{% endif %} | {{ it.size_reason }}
+  Due: {% if it.bid_due %}{{ it.bid_due|fmt_dt(now, it.bid_due_time_known) }} ({{ it.bid_due|days_left(now) }}){% else %}DUE DATE UNKNOWN{% endif %}{% if it.prebid_at %} | Pre-bid: {{ it.prebid_at|fmt_dt(now) }}{% if it.prebid_mandatory %} (MANDATORY){% endif %}{% endif %}{% if it.rfi_deadline %} | RFIs due {{ it.rfi_deadline|fmt_dt(now, false) }}{% endif %}
+  Scope: {{ it.summary }}{% if it.exclusions %} Excludes: {{ it.exclusions }}{% endif %}
+  Addenda: {{ it.addenda_count }}{% if it.addendum_gap %} (GAP){% endif %}{% if it.docs_host %} | Docs: {{ it.docs_host|humanize }}{% endif %}{% if it.flags %} | {{ it.flags|map('humanize')|join(', ') }}{% endif %}
+{% if it.change_summary %}  Changed: {{ it.change_summary }}
+{% endif %}
+  Why: {{ it.why_positive|join(' (+), ') }}{% if it.why_positive %} (+){% endif %}{% if it.why_negative %}; {{ it.why_negative|join(' (-), ') }} (-){% endif %}
+{% for label, url in it.actions.items() %}  {{ label }}: {{ url }}
+{% endfor %}
+  Open: {{ it.open_url }}
+{% endmacro %}
+{% if s.needs_decision %}
+
+NEEDS YOUR DECISION ({{ s.needs_decision|length }})
+{% for it in s.needs_decision %}{{ line(it) }}{% endfor %}
+{% endif %}
+
+NEW SINCE LAST DIGEST ({{ s.counts.new }})
+{% if s.counts.new == 0 %}Nothing new since yesterday.
+{% endif %}
+{% for it in s.new_by_band.bid %}{{ line(it) }}{% endfor %}
+{% if s.new_by_band.consider %}Consider ({{ s.new_by_band.consider|length + s.consider_overflow }}):
+{% for it in s.new_by_band.consider %}{{ line(it) }}{% endfor %}
+{% if s.consider_overflow %}+{{ s.consider_overflow }} more: {{ s.review_url }}
+{% endif %}
+{% endif %}
+{% if s.new_by_band.likely_pass %}Likely pass ({{ s.new_by_band.likely_pass|length }}):
+{% for it in s.new_by_band.likely_pass %}- [{{ it.score }}] {{ it.project_name }} - {{ it.gc_name or 'Unknown GC' }} - {{ it.bid_due|fmt_dt(now, it.bid_due_time_known) if it.bid_due else 'Due date unknown' }} - {{ it.open_url }}
+{% endfor %}
+{% endif %}
+{% if s.new_by_band.pass or s.hidden_low_count %}{{ s.new_by_band.pass|length + s.hidden_low_count }} low-fit invitations not shown: {{ s.review_url }}?band=pass
+{% endif %}
+{% if s.due_this_week %}
+
+DUE THIS WEEK ({{ s.due_this_week|length }})
+{% for it in s.due_this_week %}- {% if it.bid_due and now <= it.bid_due %}{{ it.bid_due|fmt_dt(now, it.bid_due_time_known) }}{% elif it.prebid_at %}Pre-bid {{ it.prebid_at|fmt_dt(now) }}{% endif %} | {{ it.project_name }} | {{ it.gc_name or '' }} | {{ it.status|humanize }} | {{ it.assignee_name or '-' }} | addenda {{ it.addenda_count }} | docs {{ 'yes' if it.docs_host else 'no' }} | {{ it.open_url }}
+{% endfor %}
+{% endif %}
+{% if s.changed or s.passed_changed %}
+
+CHANGED ({{ s.changed|length + s.passed_changed|length }})
+{% for it in s.changed %}- {{ it.project_name }} - {{ it.change_summary }} - {{ it.open_url }}
+{% endfor %}
+{% for it in s.passed_changed %}- (passed) {{ it.project_name }} - {{ it.change_summary }} - {{ it.open_url }}
+{% endfor %}
+{% endif %}
+{% if s.needs_review %}
+
+NEEDS REVIEW ({{ s.needs_review|length }})
+{% for r in s.needs_review %}- {{ r.kind|humanize }}: {{ r.title }} - {{ r.url }}
+{% endfor %}
+{% endif %}
+
+--
+Review: {{ s.review_url }} | Calendar: {{ s.calendar_url }} | profile v{{ s.profile_version }}
