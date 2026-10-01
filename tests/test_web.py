@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -397,3 +397,160 @@ def test_curation_requires_a_known_role(client, session):  # type: ignore[no-unt
     session.flush()
     r = client.post("/api/opportunities/opp1/merge", json={"victim_id": "opp2"})
     assert r.status_code == 403
+
+
+# ------------------------------------------------- SPEC-04 F7: the scoring profile editor
+
+
+def _profile_form(session, **overrides):  # type: ignore[no-untyped-def]
+    """The form the editor renders: one `p.<dotted.path>` field per leaf of the profile JSON."""
+    from bidtriage.worker.pipeline import active_profile
+
+    profile, version = active_profile(session)
+    session.flush()
+    form: dict[str, str] = {"based_on": str(version), "note": "test"}
+
+    def walk(prefix: str, obj: dict) -> None:
+        for k, v in obj.items():
+            if isinstance(v, dict):
+                walk(f"{prefix}{k}.", v)
+            elif isinstance(v, list):
+                form[f"p.{prefix}{k}"] = ", ".join(str(x) for x in v)
+            else:
+                form[f"p.{prefix}{k}"] = "" if v is None else str(v)
+
+    walk("", profile.model_dump(mode="json"))
+    form.update(overrides)
+    return form
+
+
+def test_profile_editor_renders_every_field(client, session):  # type: ignore[no-untyped-def]
+    _seed(session)
+    r = client.get("/admin/profiles/edit")
+    assert r.status_code == 200
+    assert 'name="p.weights.project_type"' in r.text
+    assert 'name="p.type_table.higher_education"' in r.text
+    assert 'name="p.size_band.sweet_high"' in r.text
+    assert 'name="p.thresholds.bid"' in r.text
+    assert 'name="p.boosts.key_account"' in r.text
+
+
+def test_profile_schema_is_published(client, session):  # type: ignore[no-untyped-def]
+    _seed(session)
+    schema = client.get("/admin/profiles/schema.json").json()
+    assert schema["title"] == "Profile"
+    assert "type_table" in schema["properties"]
+
+
+def test_profile_edit_round_trips_and_saves_a_new_version(client, session):  # type: ignore[no-untyped-def]
+    from bidtriage.core.models import ScoringProfile
+
+    _seed(session)
+    form = _profile_form(
+        session, **{"p.type_table.higher_education": "0.8", "p.type_table.healthcare": "1.0"}
+    )
+    r = client.post("/admin/profiles", data=form, follow_redirects=False)
+    assert r.status_code == 303
+    saved = session.scalars(select(ScoringProfile).order_by(ScoringProfile.version.desc())).first()
+    assert saved is not None and saved.json["type_table"]["higher_education"] == 0.8
+    # A draft is inert until someone activates it.
+    assert saved.active is False
+    # Nothing else drifted on the way through the form.
+    assert saved.json["weights"] == {
+        "project_type": 0.25,
+        "size": 0.25,
+        "gc": 0.25,
+        "distance": 0.10,
+        "timing": 0.10,
+        "bid_type": 0.05,
+    }
+
+
+def test_profile_edit_rejects_weights_that_do_not_sum_to_one(client, session):  # type: ignore[no-untyped-def]
+    from bidtriage.core.models import ScoringProfile
+
+    _seed(session)
+    form = _profile_form(session, **{"p.weights.project_type": "0.30"})  # sums to 1.05
+    before = session.scalar(select(func.count()).select_from(ScoringProfile))
+    r = client.post("/admin/profiles", data=form, follow_redirects=False)
+    assert r.status_code == 400 and "sum to 1.0" in r.json()["detail"]
+    assert session.scalar(select(func.count()).select_from(ScoringProfile)) == before
+
+
+def test_profile_preview_shows_band_changes_and_saves_nothing(client, session):  # type: ignore[no-untyped-def]
+    from bidtriage.core.models import Score, ScoringProfile
+    from bidtriage.worker import pipeline
+
+    user, opp = _seed(session)
+    opp.canonical = {
+        **opp.canonical,
+        "project_type": "higher_education",
+        "size_signals": {"stated_electrical_value": 194_000},
+        "bid_type": "hard_bid",
+        "sector": "private",
+        "bid_due": {"value": (datetime.now(tz=UTC) + timedelta(days=14)).isoformat()},
+    }
+    session.flush()
+    pipeline.rescore(session, [opp], now=datetime.now(tz=UTC))
+    versions = session.scalar(select(func.count()).select_from(ScoringProfile))
+    scores = session.scalar(select(func.count()).select_from(Score))
+
+    form = _profile_form(
+        session, **{"p.type_table.higher_education": "0.8", "p.type_table.healthcare": "1.0"}
+    )
+    r = client.post("/admin/profiles/preview", data=form)
+    assert r.status_code == 200
+    assert "would change band" in r.text and "Benedum Hall" in r.text
+    # A preview is a question, not an edit.
+    assert session.scalar(select(func.count()).select_from(ScoringProfile)) == versions
+    assert session.scalar(select(func.count()).select_from(Score)) == scores
+
+
+def test_profile_preview_reports_validation_errors_in_the_form(client, session):  # type: ignore[no-untyped-def]
+    _seed(session)
+    form = _profile_form(session, **{"p.weights.size": "0.9"})
+    r = client.post("/admin/profiles/preview", data=form)
+    assert r.status_code == 200 and "sum to 1.0" in r.text
+
+
+def test_profile_warnings_name_a_missing_type(client, session):  # type: ignore[no-untyped-def]
+    """A type with no row still scores, as `other`. The editor has to say so out loud."""
+    import json as _json
+
+    from bidtriage.core.models import ScoringProfile
+    from bidtriage.scoring.profile import DEFAULT_PROFILE
+
+    _seed(session)
+    table = dict(DEFAULT_PROFILE.type_table)
+    del table["healthcare"]
+    body = DEFAULT_PROFILE.model_dump(mode="json") | {"type_table": table}
+    r = client.post(
+        "/admin/profiles",
+        data={"json_body": _json.dumps(body), "note": "dropped healthcare"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    saved = session.scalars(select(ScoringProfile).order_by(ScoringProfile.version.desc())).first()
+    assert saved is not None
+
+    page = client.get(f"/admin/profiles/edit?version={saved.version}")
+    assert page.status_code == 200
+    assert "healthcare" in page.text and "fall back to other" in page.text
+
+
+def test_opportunity_page_shows_what_each_factor_is_worth(client, session):  # type: ignore[no-untyped-def]
+    """An estimator has to be able to see why a factor was left out of the Why line."""
+    from bidtriage.worker import pipeline
+
+    _seed(session)
+    opp = session.get(Opportunity, "opp1")
+    assert opp is not None
+    opp.canonical = {**opp.canonical, "project_type": "government_civic"}
+    session.flush()
+    pipeline.rescore(session, [opp], now=datetime.now(tz=UTC))
+
+    r = client.get("/opportunities/opp1")
+    assert r.status_code == 200
+    assert "Neutral" in r.text
+    assert "no signal" in r.text  # size and GC are unknown, and say so
+    assert "helping" in r.text  # government civic is above neutral

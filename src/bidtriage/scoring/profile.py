@@ -180,19 +180,98 @@ class Profile(BaseModel):
     boosts: Boosts = Field(default_factory=Boosts)
     caps: Caps = Field(default_factory=Caps)
     key_accounts: list[str] = Field(default_factory=list)
+    #: Below this, an extracted date is "low confidence" for the `past_due_at_receipt` reason.
+    low_confidence: float = 0.6
 
     @model_validator(mode="after")
     def _validate(self) -> Profile:
         if abs(self.weights.total() - 1.0) > 0.001:
             raise ValueError(f"weights must sum to 1.0 (got {self.weights.total():.3f})")
-        for k, v in self.type_table.items():
+        for w, v in self.weights.model_dump().items():
             if not 0 <= v <= 1:
-                raise ValueError(f"type_table[{k}] must be within 0..1")
+                raise ValueError(f"weights.{w} must be within 0..1")
+        for table in ("type_table", "electrical_share", "gc_tier", "bid_type"):
+            for k, v in getattr(self, table).items():
+                if not 0 <= v <= 1:
+                    raise ValueError(f"{table}[{k}] must be within 0..1")
+        for name, v in (
+            ("partial_relevance_multiplier", self.partial_relevance_multiplier),
+            ("owner_direct_default", self.owner_direct_default),
+            ("hit_rate_high", self.hit_rate_high),
+            ("hit_rate_low", self.hit_rate_low),
+            ("hit_rate_adjust", self.hit_rate_adjust),
+            ("low_confidence", self.low_confidence),
+            *(
+                (f"distance.{k}", v)
+                for k, v in self.distance.model_dump().items()
+                if "miles" not in k
+            ),
+            *((f"timing.{k}", v) for k, v in self.timing.model_dump().items()),
+            ("size_band.ceiling_value", self.size_band.ceiling_value),
+            ("size_band.unknown_value", self.size_band.unknown_value),
+        ):
+            if not 0 <= v <= 1:
+                raise ValueError(f"{name} must be within 0..1")
+        for k, v in self.cost_per_sf.items():
+            if v <= 0:
+                raise ValueError(f"cost_per_sf[{k}] must be positive")
         if not any(abs(v - 1.0) < 1e-9 for v in self.type_table.values()):
             raise ValueError("at least one project type must have factor 1.0")
         if not (self.thresholds.likely_pass < self.thresholds.consider < self.thresholds.bid):
             raise ValueError("thresholds must be ordered likely_pass < consider < bid")
+        if self.thresholds.likely_pass < 0 or self.thresholds.bid > 100:
+            raise ValueError("thresholds must be within 0..100")
+        if self.hit_rate_low > self.hit_rate_high:
+            raise ValueError("hit_rate_low must not exceed hit_rate_high")
+        for name, v in (
+            ("renewables", self.boosts.renewables),
+            ("key_account", self.boosts.key_account),
+            ("design_build_or_bim", self.boosts.design_build_or_bim),
+            ("sustainability", self.boosts.sustainability),
+            ("requested_by_name", self.boosts.requested_by_name),
+        ):
+            if not 0 <= v <= 100:
+                raise ValueError(f"boosts.{name} must be within 0..100")
+        for name, v in self.caps.model_dump().items():
+            if not 0 <= v <= 100:
+                raise ValueError(f"caps.{name} must be within 0..100")
         return self
+
+    def validation_warnings(self) -> list[str]:
+        """Non-fatal problems worth showing in the editor (SPEC-04 F7, `test_profile_missing_type`).
+
+        A project type the table does not mention still scores — it falls back to `other` — so a
+        missing row is a warning, not a rejection. Saying so is the point: silently scoring
+        healthcare as "other" is exactly the kind of surprise this profile exists to prevent.
+        """
+        out: list[str] = []
+        fallback = self.type_table.get("other", 0.4)
+        for t in sorted(set(DEFAULT_TYPE_TABLE) - set(self.type_table)):
+            out.append(
+                f"project type '{t}' is missing from the type table; "
+                f"it will fall back to other ({fallback:g})"
+            )
+        for t in sorted(set(DEFAULT_ELECTRICAL_SHARE) - set(self.electrical_share)):
+            out.append(f"project type '{t}' has no electrical share; it will fall back to unknown")
+        if "other" not in self.type_table:
+            out.append("the type table has no 'other' row; unlisted types will score 0.4")
+        return out
+
+    def neutral(self, factor: str) -> float:
+        """What a factor is worth when nothing is known about it (SPEC-04 F6).
+
+        This is the line between "a reason to bid" and "an absence of information". It is derived
+        from the profile rather than hard-coded, so an estimator who decides an unknown GC is worth
+        0.4 moves the bar for what counts as a positive along with it.
+        """
+        return {
+            "project_type": self.type_table.get("unknown", 0.5),
+            "size": self.size_band.unknown_value,
+            "gc": self.gc_tier.get("unknown", 0.5),
+            "distance": self.distance.unknown_value,
+            "timing": self.timing.unknown,
+            "bid_type": self.bid_type.get("unknown", 0.7),
+        }[factor]
 
 
 DEFAULT_PROFILE = Profile()

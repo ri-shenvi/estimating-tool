@@ -34,4 +34,4 @@ activated, and referenced by every score. Rescoring is idempotent.
 
 ## Action Items
 1. [x] `scoring` module: `score(snapshot, profile) -> ScoreResult`, default profile JSON, tests for boundaries and caps.
-2. [ ] `make calibrate` over the labeled corpus.
+2. [x] `make calibrate` over the labeled corpus: per-band breakdown plus confusion by project type and GC tier, gated on the SPEC-04 precision/recall goals.

@@ -43,7 +43,9 @@ low-confidence message is still processed as its best guess.</small></p>
 <table><tr><th>v</th><th>Name</th><th>Active</th><th>Note</th><th></th></tr>
 {% for p in profiles %}<tr><td>{{ p.version }}</td><td>{{ p.json.name }}</td><td>{{ '✓' if p.active else '' }}</td><td>{{ p.note }}</td><td>{% if not p.active %}<form class="inline" method="post" action="/admin/profiles/{{ p.version }}/activate"><button>Activate</button></form>{% endif %}</td></tr>{% endfor %}
 </table>
-<details><summary>New profile (JSON)</summary><form method="post" action="/admin/profiles"><textarea name="json_body" rows="12" style="width:100%"></textarea><br><input name="note" placeholder="note"> <button>Save draft</button></form></details>
+<p><a class="btn" href="/admin/profiles/edit">Edit scoring profile</a> &middot; <a href="/admin/profiles/schema.json">JSON schema</a>
+<br><small>Activating a version rescores every live opportunity and flags the ones that change band on the next digest.</small></p>
+<details><summary>New profile (paste JSON)</summary><form method="post" action="/admin/profiles"><textarea name="json_body" rows="12" style="width:100%"></textarea><br><input name="note" placeholder="note"> <button>Save draft</button></form></details>
 </div>
 <div class="card"><h2>GC directory</h2>
 <table><tr><th>GC</th><th>Tier</th><th>Domains</th><th>Set tier</th></tr>

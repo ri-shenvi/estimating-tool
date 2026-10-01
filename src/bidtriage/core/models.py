@@ -20,6 +20,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
+    inspect,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -524,3 +526,33 @@ class GeocodeCache(Base):
     lat: Mapped[float] = mapped_column(Float, nullable=False)
     lon: Mapped[float] = mapped_column(Float, nullable=False)
     precision: Mapped[str] = mapped_column(String(10), nullable=False, default="none")
+
+
+# --------------------------------------------------------- scoring profile immutability
+
+
+class ProfileImmutableError(Exception):
+    """Raised when something tries to rewrite or delete a scoring profile version (SPEC-04 F7)."""
+
+
+#: Everything except `active`: activation is the one thing a profile row is allowed to change.
+_PROFILE_FROZEN = ("version", "json", "author_id", "note", "created_at")
+
+
+@event.listens_for(ScoringProfile, "before_delete")
+def _profile_no_delete(mapper: Any, connection: Any, target: ScoringProfile) -> None:
+    raise ProfileImmutableError(
+        f"scoring profile v{target.version} cannot be deleted; every score that cites a version "
+        "has to stay explainable"
+    )
+
+
+@event.listens_for(ScoringProfile, "before_update")
+def _profile_no_rewrite(mapper: Any, connection: Any, target: ScoringProfile) -> None:
+    state = inspect(target)
+    changed = [a for a in _PROFILE_FROZEN if state.attrs[a].history.has_changes()]
+    if changed:
+        raise ProfileImmutableError(
+            f"scoring profile v{target.version} is immutable; {', '.join(changed)} cannot change. "
+            "Save a new version instead."
+        )

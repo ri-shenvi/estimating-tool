@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -245,25 +248,198 @@ def set_tier(
     return RedirectResponse("/admin/", status_code=303)
 
 
-@router.post("/profiles")
-def create_profile(
-    json_body: str = Form(...),
-    note: str = Form(default=""),
+# ------------------------------------------------------- scoring profiles (SPEC-04 F7)
+
+
+def _coerce(current: Any, raw: str) -> Any:
+    """Parse one form value back into the shape the profile JSON already has at that path."""
+    raw = raw.strip()
+    if isinstance(current, bool):
+        return raw.lower() in ("1", "true", "on", "yes")
+    if isinstance(current, int):
+        return int(float(raw))
+    if isinstance(current, float):
+        return float(raw)
+    if isinstance(current, list):
+        return [part.strip() for part in raw.split(",") if part.strip()]
+    return raw or None
+
+
+def profile_from_form(base: Profile, form: Mapping[str, Any]) -> Profile:
+    """Rebuild a profile from `p.<dotted.path>` form fields laid over an existing version.
+
+    The editor is a thin form over the published JSON schema (SPEC-04 technical notes): the
+    template renders one input per leaf, and this walks them back into place. Validation is the
+    model's, so a weights column that sums to 1.05 is refused here exactly as it is in the API.
+    """
+    data = base.model_dump(mode="json")
+    for key, raw in form.items():
+        if not key.startswith("p.") or not isinstance(raw, str):
+            continue
+        *parents, leaf = key[2:].split(".")
+        node: Any = data
+        for part in parents:
+            if not isinstance(node, dict):
+                raise HTTPException(400, f"unknown profile field {key}")
+            node = node.setdefault(part, {})
+        if not isinstance(node, dict):
+            raise HTTPException(400, f"unknown profile field {key}")
+        node[leaf] = _coerce(node.get(leaf), raw)
+    try:
+        return Profile.model_validate(data)
+    except ValidationError as e:
+        raise HTTPException(400, f"invalid profile: {_first_error(e)}") from e
+
+
+def _first_error(e: ValidationError) -> str:
+    first = e.errors()[0]
+    return str(first.get("msg", "")).removeprefix("Value error, ")
+
+
+def _based_on(form: Mapping[str, Any]) -> int | None:
+    """The version this edit started from, as the hidden field carries it."""
+    raw = form.get("based_on")
+    return int(raw) if isinstance(raw, str) and raw.strip() else None
+
+
+def _base_profile(session: Session, version: int | None) -> tuple[Profile, int | None]:
+    if version is None:
+        return pipeline.active_profile(session)
+    row = session.get(ScoringProfile, version)
+    if row is None:
+        raise HTTPException(404)
+    return Profile.model_validate(row.json), row.version
+
+
+def _edit_page(
+    request: Request,
+    session: Session,
+    user: CurrentUser,
+    *,
+    profile: Profile,
+    based_on: int | None,
+    note: str = "",
+    preview: pipeline.ProfilePreview | None = None,
+    error: str | None = None,
+):
+    return _templates().TemplateResponse(
+        request,
+        "profile_edit.html",
+        {
+            "user": user,
+            "profile": profile.model_dump(mode="json"),
+            "based_on": based_on,
+            "note": note,
+            "preview": preview,
+            "error": error,
+            "warnings": profile.validation_warnings(),
+            "versions": session.scalars(
+                select(ScoringProfile).order_by(ScoringProfile.version.desc())
+            ).all(),
+        },
+    )
+
+
+@router.get("/profiles/edit", response_class=HTMLResponse)
+def edit_profile(
+    request: Request,
+    version: int | None = None,
     session: Session = Depends(db),
     user: CurrentUser = Depends(require_role("admin", "chief")),
 ):
-    import json
+    """The profile form, started from an existing version (default: the active one)."""
+    profile, based_on = _base_profile(session, version)
+    return _edit_page(request, session, user, profile=profile, based_on=based_on)
 
+
+@router.get("/profiles/schema.json")
+def profile_schema() -> dict[str, Any]:
+    """The published profile JSON schema the editor and any external tooling validate against."""
+    return Profile.model_json_schema()
+
+
+@router.post("/profiles/preview", response_class=HTMLResponse)
+async def preview_profile(
+    request: Request,
+    session: Session = Depends(db),
+    user: CurrentUser = Depends(require_role("admin", "chief")),
+):
+    """Rescore the last 30 days under the edited profile and show what would move. Writes nothing."""
+    form = await request.form()
+    based_on = _based_on(form)
+    note = str(form.get("note") or "")
+    base, _ = _base_profile(session, based_on)
     try:
-        profile = Profile.model_validate(json.loads(json_body))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(400, f"invalid profile: {e}") from e
-    session.add(
-        ScoringProfile(
-            json=profile.model_dump(mode="json"),
+        candidate = profile_from_form(base, form)
+    except HTTPException as e:
+        return _edit_page(
+            request,
+            session,
+            user,
+            profile=base,
+            based_on=based_on,
             note=note,
-            author_id=None if user.id == "dev" else user.id,
-            active=False,
+            error=str(e.detail),
+        )
+    settings = get_settings()
+    preview = pipeline.preview_profile(
+        session,
+        candidate,
+        now=datetime.now(tz=UTC),
+        home=(settings.home_lat, settings.home_lon),
+    )
+    return _edit_page(
+        request,
+        session,
+        user,
+        profile=candidate,
+        based_on=based_on,
+        note=note,
+        preview=preview,
+    )
+
+
+@router.post("/profiles")
+async def create_profile(
+    request: Request,
+    session: Session = Depends(db),
+    user: CurrentUser = Depends(require_role("admin", "chief")),
+):
+    """Save a draft version. Drafts are inert until someone activates them."""
+    form = await request.form()
+    raw_json = form.get("json_body")
+    if isinstance(raw_json, str) and raw_json.strip():
+        import json
+
+        try:
+            profile = Profile.model_validate(json.loads(raw_json))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(400, f"invalid profile: {e}") from e
+        based_on = None
+    else:
+        based_on = _based_on(form)
+        base, _ = _base_profile(session, based_on)
+        profile = profile_from_form(base, form)
+    note = str(form.get("note") or "")
+    row = ScoringProfile(
+        json=profile.model_dump(mode="json"),
+        note=note,
+        author_id=None if user.id == "dev" else user.id,
+        active=False,
+        created_at=datetime.now(tz=UTC),
+    )
+    session.add(row)
+    session.flush()
+    session.add(
+        AuditEvent(
+            actor_user_id=None if user.id == "dev" else user.id,
+            role=user.role,
+            action="profile.create",
+            entity_type="scoring_profile",
+            entity_id=str(row.version),
+            before=None,
+            after={"version": row.version, "based_on": based_on, "note": note},
+            channel="admin",
             created_at=datetime.now(tz=UTC),
         )
     )

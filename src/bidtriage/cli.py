@@ -457,35 +457,58 @@ def reextract(
 
 
 @app.command()
-def calibrate(labeled_csv: Path) -> None:
-    """Score a labeled corpus (columns: opportunity_id,label) and print band precision/recall (SPEC-04)."""
+def calibrate(
+    labeled_csv: Path,
+    gate: bool = typer.Option(True, help="Exit non-zero when the SPEC-04 goals are not met."),
+) -> None:
+    """Score a labeled corpus (columns: opportunity_id,label) and print the SPEC-04 calibration report."""
     import csv
 
     from sqlalchemy import select
 
     from bidtriage.core.db import session_scope
-    from bidtriage.core.models import Opportunity, Score
+    from bidtriage.core.models import GC, Opportunity, Score
+    from bidtriage.scoring.calibrate import LabeledScore, report
 
     if not labeled_csv.exists():
         typer.echo(f"{labeled_csv} not found; export the chief estimator's labels first (Phase 0).")
         raise typer.Exit(1)
-    labels = {r["opportunity_id"]: r["label"] for r in csv.DictReader(labeled_csv.open())}
-    tp = fp = fn = 0
+    with labeled_csv.open() as fh:
+        labels = {r["opportunity_id"]: r["label"] for r in csv.DictReader(fh)}
+    rows: list[LabeledScore] = []
+    missing = 0
     with session_scope() as s:
         for o in s.scalars(select(Opportunity)).all():
-            sc = s.scalars(
-                select(Score).where(Score.opportunity_id == o.id).order_by(Score.computed_at.desc())
-            ).first()
-            if o.id not in labels or sc is None:
+            if o.id not in labels:
                 continue
-            pred_bid = sc.band == "bid"
-            truth_bid = labels[o.id] == "bid"
-            tp += pred_bid and truth_bid
-            fp += pred_bid and not truth_bid
-            fn += (not pred_bid) and truth_bid
-    p = tp / (tp + fp) if tp + fp else 0
-    r = tp / (tp + fn) if tp + fn else 0
-    typer.echo(f"bid band: precision {p:.2f} recall {r:.2f} (tp={tp} fp={fp} fn={fn})")
+            sc = s.scalars(
+                select(Score)
+                .where(Score.opportunity_id == o.id)
+                .order_by(Score.computed_at.desc(), Score.id.desc())
+            ).first()
+            if sc is None:
+                missing += 1
+                continue
+            gc = s.get(GC, o.gc_id) if o.gc_id else None
+            rows.append(
+                LabeledScore(
+                    opportunity_id=o.id,
+                    label=labels[o.id],
+                    band=sc.band,
+                    score=sc.score,
+                    project_type=o.canonical.get("project_type", "unknown"),
+                    gc_tier=gc.tier if gc else "unknown",
+                )
+            )
+    text, passed = report(rows)
+    typer.echo(text)
+    unknown = len(labels) - len(rows) - missing
+    if missing or unknown:
+        typer.echo(
+            f"\n{missing} labelled opportunit(y/ies) have no score yet; {unknown} label(s) match no opportunity."
+        )
+    if gate and not passed:
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":
