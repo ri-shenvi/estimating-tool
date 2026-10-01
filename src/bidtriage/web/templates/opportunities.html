@@ -14,4 +14,30 @@
 </tr>
 {% else %}<tr><td colspan="7">No opportunities yet. Run <code>bidtriage ingest-dir tests/fixtures/messages --fake</code> to load samples.</td></tr>{% endfor %}
 </table>
+
+{% if needs_review %}
+<div class="card"><h2>Needs review</h2>
+<p><small>Ambiguous matches and updates with no original. Merging is reversible for 30 days.</small></p>
+<table><tr><th>Project</th><th>GC</th><th>Why</th></tr>
+{% for r in needs_review %}
+<tr>
+<td><a href="/opportunities/{{ r.o.id }}">{{ (r.o.canonical.project_name or {}).value or 'Untitled' }}</a></td>
+<td>{{ (r.o.canonical.gc_name or {}).value or '' }}</td>
+<td>{% for f in r.o.flags %}{% if f in ('possible_duplicate','orphan_update','addendum_gap','date_conflict') %}<span class="chip">{{ f|replace('_',' ') }}</span>{% endif %}{% endfor %}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% endif %}
+
+{% if merges %}
+<div class="card"><h2>Recent merges and splits</h2>
+<table><tr><th>When</th><th>What</th><th>Survivor</th><th>Other</th><th></th></tr>
+{% for m in merges %}
+<tr><td>{{ m.created_at }}</td><td>{{ m.kind }}</td>
+<td><a href="/opportunities/{{ m.survivor_id }}">{{ m.survivor_id[:8] }}</a></td>
+<td>{{ m.other_id[:8] }}</td>
+<td><form class="inline" method="post" action="/api/merges/{{ m.id }}/undo" onsubmit="event.preventDefault();fetch(this.action,{method:'POST'}).then(r=>r.ok?location.reload():r.json().then(j=>alert(j.detail)))"><button>undo</button></form></td></tr>
+{% endfor %}
+</table></div>
+{% endif %}
 {% endblock %}

@@ -30,6 +30,21 @@ An optional LLM tiebreak for the middle band exists behind a flag, default off.
 - Harder: thresholds need tuning on the corpus; the review queue must stay small (< 5/day) or it will be ignored.
 - Revisit: if the review queue exceeds 10/day for two weeks, enable the LLM tiebreak and measure.
 
+Refinements from implementing SPEC-03, all in the "prefer a duplicate to a false merge" direction:
+
+- A geocoded distance over 1 km drops the pair below 0.6 rather than below 0.9, so distinct sites
+  become two opportunities instead of one provisional attach.
+- A date that disagrees cannot count against an `addendum` or `date_change`, because moving the date
+  is the message's purpose. A date that agrees still counts for the match.
+- Ties break on the date the message states, then on recency, so an addendum cannot land on the
+  wrong one of two rebids by accident.
+- The cross-GC rule is checked before the hard keys: Ferry replying to all can put two GCs'
+  invitations in one email thread, so a shared thread is not proof of one solicitation.
+
 ## Action Items
 1. [x] `resolution` module with normalization, evidence scoring, tests for the cases in SPEC-03.
 2. [ ] Threshold calibration on the labeled corpus.
+3. [ ] Measure the review-queue rate once real mail is flowing; the LLM tiebreak stays off until it exceeds 10/day.
+4. [x] Verify the `pg_trgm` candidate path against a real PostgreSQL (`make test-postgres`). It
+   resolves the fixture corpus identically to the SQLite fallback, with better precision and equal
+   recall; the plan assertion is a regression guard, since the two forms differ only in `EXPLAIN`.

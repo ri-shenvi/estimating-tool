@@ -291,11 +291,17 @@ class Opportunity(Base):
     fingerprint: Mapped[str] = mapped_column(String(40), nullable=False, default="", index=True)
     lat: Mapped[float | None] = mapped_column(Float)
     lon: Mapped[float | None] = mapped_column(Float)
+    # Prefix-matchable geocode bucket, so candidate generation can ask "same area?" in SQL
+    # without a PostGIS dependency (SPEC-03 technical notes).
+    geohash: Mapped[str] = mapped_column(String(12), nullable=False, default="", index=True)
     first_seen_at: Mapped[datetime] = _ts()
     last_activity_at: Mapped[datetime] = _ts()
     assignee_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     snooze_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     changed_since_digest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # True when the last change was big enough to be worth telling an estimator who already
+    # passed: bid_due moved more than a week, or size moved by half (SPEC-03 F5).
+    material_change: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     change_summary: Mapped[str | None] = mapped_column(Text)
     flags: Mapped[list[Any]] = mapped_column(JSONType, nullable=False, default=list)
     locked_fields: Mapped[list[Any]] = mapped_column(JSONType, nullable=False, default=list)
@@ -312,6 +318,20 @@ class OpportunitySource(Base):
     evidence: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
 
 
+class OpportunityKey(Base):
+    """A hard key an opportunity can be found by (SPEC-03 F2.1).
+
+    Denormalized out of the source messages so matching an inbound message costs one indexed
+    lookup rather than a walk over every candidate's messages and links.
+    """
+
+    __tablename__ = "opportunity_keys"
+    opportunity_id: Mapped[str] = mapped_column(ForeignKey("opportunities.id"), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), primary_key=True)  # thread | platform
+    value: Mapped[str] = mapped_column(String(998), primary_key=True)
+    __table_args__ = (Index("ix_opportunity_keys_lookup", "kind", "value"),)
+
+
 class Addendum(Base):
     __tablename__ = "addenda"
     id: Mapped[str] = _pk()
@@ -323,7 +343,29 @@ class Addendum(Base):
     message_id: Mapped[str] = mapped_column(ForeignKey("raw_messages.id"), nullable=False)
     received_at: Mapped[datetime] = _ts()
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # How many messages delivered this same addendum: a CC fan-out is one addendum, not three.
+    copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     __table_args__ = (UniqueConstraint("opportunity_id", "label", name="uq_addenda_opp_label"),)
+
+
+class MergeLog(Base):
+    """One manual merge or split, with everything undo needs (SPEC-03 F6).
+
+    `before` holds the removed opportunity's own row and the ids of the child rows that moved, so
+    undo restores sources, addenda, history and status exactly rather than approximately.
+    """
+
+    __tablename__ = "merge_log"
+    id: Mapped[str] = _pk()
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)  # merge | split
+    survivor_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    other_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    reason: Mapped[str | None] = mapped_column(Text)
+    before: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
+    created_at: Mapped[datetime] = _ts()
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    undone_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
 
 
 class FieldHistory(Base):
@@ -395,6 +437,9 @@ class Outcome(Base):
     award_price: Mapped[float | None] = mapped_column(Float)
     competitor: Mapped[str | None] = mapped_column(String(200))
     notes: Mapped[str | None] = mapped_column(Text)
+    # The message this was read out of, when resolution recorded it rather than a person
+    # (SPEC-03 edge cases: "outcome recorded with source").
+    source_message_id: Mapped[str | None] = mapped_column(ForeignKey("raw_messages.id"))
     created_at: Mapped[datetime] = _ts()
 
 

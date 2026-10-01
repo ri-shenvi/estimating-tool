@@ -14,7 +14,7 @@
     {% if it.rfi_deadline %} · RFIs due {{ it.rfi_deadline|fmt_dt(now, false) }}{% endif %}
   </div>
   <div style="margin-top:4px;color:#333;">Scope: {{ it.summary }}{% if it.exclusions %} <i>Excludes: {{ it.exclusions }}</i>{% endif %}</div>
-  <div style="margin-top:2px;color:#555;">Addenda: {{ it.addenda_count }}{% if it.addendum_gap %} <span style="color:#b00020;">(gap: one or more not received)</span>{% endif %}{% if it.docs_host %} · Docs: {{ it.docs_host|humanize }}{% endif %}
+  <div style="margin-top:2px;color:#555;">Addenda: {{ it.addenda_count }}{% if it.addendum_gap %} <span style="color:#b00020;">({% if it.missing_addenda %}Addend{{ 'a' if it.missing_addenda|length > 1 else 'um' }} {{ it.missing_addenda|join(', ') }} not received{% else %}gap: one or more not received{% endif %})</span>{% endif %}{% if it.docs_host %} · Docs: {{ it.docs_host|humanize }}{% endif %}
     {% for f in it.flags %}<span style="display:inline-block;margin-left:4px;padding:0 5px;border:1px solid #bbb;border-radius:8px;font-size:11px;">{{ f|humanize }}</span>{% endfor %}
   </div>
   {% if it.change_summary %}<div style="margin-top:4px;color:#8a4b00;"><b>Changed:</b> {{ it.change_summary }}</div>{% endif %}

@@ -31,6 +31,8 @@ class DigestItem(BaseModel):
     exclusions: str | None = None
     addenda_count: int = 0
     addendum_gap: bool = False
+    #: The addendum numbers we never received, so the digest can name them (SPEC-03 F3).
+    missing_addenda: list[int] = Field(default_factory=list)
     docs_host: str | None = None
     score: int = 0
     band: str = "pass"
@@ -42,6 +44,9 @@ class DigestItem(BaseModel):
     assignee_name: str | None = None
     first_seen_at: datetime | None = None
     changed_since_digest: bool = False
+    # Whether the change was big enough to be worth a line for an opportunity already passed:
+    # bid_due moved by more than a week, or size by more than half (SPEC-03 F5).
+    material_change: bool = False
     change_summary: str | None = None
     is_new: bool = False
     actions: dict[str, str] = Field(default_factory=dict)
@@ -171,12 +176,23 @@ def assemble(
             )
         ]
     )
+    # `cancelled`, `won` and `lost` belong here too: those are the messages that close a job out,
+    # and SPEC-03's edge case for a cancelled-after-passed job asks for exactly "the Changed
+    # section one-liner". Without them the news reaches no section at all and
+    # `changed_since_digest` is cleared on send, so it is gone for good.
     changed = [
         it
         for it in items
-        if it.changed_since_digest and it.status in ("bidding", "undecided", "new", "snoozed")
+        if it.changed_since_digest
+        and it.status in ("bidding", "undecided", "new", "snoozed", "cancelled", "won", "lost")
     ]
-    passed_changed = [it for it in items if it.changed_since_digest and it.status == "passed"]
+    # A passed job is out of the digest, with one exception: a change material enough that the
+    # decision deserves revisiting. Anything smaller would be noise on a job nobody is bidding.
+    passed_changed = [
+        it
+        for it in items
+        if it.changed_since_digest and it.material_change and it.status == "passed"
+    ]
     prebid_today = [
         it
         for it in items

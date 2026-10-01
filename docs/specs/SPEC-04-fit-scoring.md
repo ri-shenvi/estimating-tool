@@ -90,6 +90,34 @@ Every score stores `explanation[]`: ordered list of `{factor, weight, value, con
 plus `caps[]`, `boosts[]`, `missing_inputs[]`. The digest renders the top three positive and the
 top negative contributions in plain language.
 
+"Positive" means the factor is *helping* — not merely that it is one of the largest numbers. The
+two lists must be disjoint: a factor that appears as a reason to bid cannot also appear as the
+reason not to. A factor at or below its neutral value is not a reason for anything and belongs in
+neither list; if fewer than three factors clear that bar, render fewer than three.
+
+**Known deviation (found 2026-09-30 against the running product, unfixed).** `ScoreResult.top_positive`
+is `sorted(contributions, key=-contribution)[:3]` with no floor, while `top_negative` ranks by
+shortfall from the maximum (`contribution - weight * 100`) and filters to `value < 0.7`. On a
+weighted-average score, contribution is dominated by *weight*, so the "positive" list is really
+"the three heaviest factors" regardless of merit, and a mid-valued heavy factor satisfies both
+definitions at once. Every one of the 22 digest items in a fixture-corpus run carried a
+self-contradiction:
+
+```
+Why: government civic (+), size unknown (+), GC tier not set (+); size unknown (-)
+
+factor          weight   value  contrib
+project_type      0.25    0.60     15.0
+size              0.25    0.50     12.5   <- top_positive #2 AND top_negative #1
+gc                0.25    0.50     12.5
+timing            0.10    0.70      7.0
+```
+
+Nothing about that job scores above 0.60, yet three facts are presented as reasons to bid, and
+"size unknown" — pure absence of information — is presented as the second-best one. This is the
+chief estimator's trust story (`G3`, and "show me *why* it scored as it did so that I can trust or
+override the number") failing on every row.
+
 ### F7. Scoring profile
 
 - Stored as a versioned document (`scoring_profile` table: version, json, author, created_at, note, active flag).
@@ -130,6 +158,7 @@ time crossing a timing boundary (nightly rescoring pass before the digest).
 | GC has 4 bids, 3 wins (below the 5-bid minimum) | No hit-rate adjustment | `test_hit_rate_min_sample` |
 | Both `union_required` and `open_shop_indicated` flags (contradictory extraction) | Cap not applied; reason "conflicting labor flags, verify" | `test_conflicting_labor_flags` |
 | Boosts push total above 100 | Clamped to 100 | `test_clamp_100` |
+| All factors at or below neutral (unknown size, unset GC tier, unknown distance) | No factor is offered as a positive reason; the positive and negative lists never name the same factor | `test_explanation_lists_are_disjoint` |
 | Profile with a type missing from the table | Falls back to `other` weight; validation warns | `test_profile_missing_type` |
 | Rescoring at midnight moves days-to-due from 7 to 6 | Timing factor changes 1.0 → 0.6 only at the boundary; digest does not report this as a "change" | `test_timing_boundary_not_a_change` |
 | Nightly rescoring of 5,000 opportunities | Completes in < 60 s | `test_rescore_performance` |

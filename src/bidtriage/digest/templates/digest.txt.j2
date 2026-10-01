@@ -19,7 +19,7 @@ SYSTEM HEALTH
   GC: {{ it.gc_name or 'Unknown' }}{% if it.gc_tier != 'unknown' %} (Tier {{ it.gc_tier }}){% endif %}{% if it.location_short %} | {{ it.location_short }}{% endif %}{% if it.distance_miles is not none %}, {{ it.distance_miles|round|int }} mi{% endif %} | {{ it.size_reason }}
   Due: {% if it.bid_due %}{{ it.bid_due|fmt_dt(now, it.bid_due_time_known) }} ({{ it.bid_due|days_left(now) }}){% else %}DUE DATE UNKNOWN{% endif %}{% if it.prebid_at %} | Pre-bid: {{ it.prebid_at|fmt_dt(now) }}{% if it.prebid_mandatory %} (MANDATORY){% endif %}{% endif %}{% if it.rfi_deadline %} | RFIs due {{ it.rfi_deadline|fmt_dt(now, false) }}{% endif %}
   Scope: {{ it.summary }}{% if it.exclusions %} Excludes: {{ it.exclusions }}{% endif %}
-  Addenda: {{ it.addenda_count }}{% if it.addendum_gap %} (GAP){% endif %}{% if it.docs_host %} | Docs: {{ it.docs_host|humanize }}{% endif %}{% if it.flags %} | {{ it.flags|map('humanize')|join(', ') }}{% endif %}
+  Addenda: {{ it.addenda_count }}{% if it.addendum_gap %} ({% if it.missing_addenda %}Addend{{ 'a' if it.missing_addenda|length > 1 else 'um' }} {{ it.missing_addenda|join(', ') }} not received{% else %}GAP{% endif %}){% endif %}{% if it.docs_host %} | Docs: {{ it.docs_host|humanize }}{% endif %}{% if it.flags %} | {{ it.flags|map('humanize')|join(', ') }}{% endif %}
 {% if it.change_summary %}  Changed: {{ it.change_summary }}
 {% endif %}
   Why: {{ it.why_positive|join(' (+), ') }}{% if it.why_positive %} (+){% endif %}{% if it.why_negative %}; {{ it.why_negative|join(' (-), ') }} (-){% endif %}

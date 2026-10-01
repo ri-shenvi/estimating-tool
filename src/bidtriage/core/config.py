@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     extraction_effort: str = Field(default="medium", alias="EXTRACTION_EFFORT")
     llm_daily_spend_cap_usd: float = Field(default=25.0, alias="LLM_DAILY_SPEND_CAP_USD")
 
+    # SPEC-03: opportunity resolution. Mail from these domains is Ferry's own side of a thread:
+    # kept as a source for the history, never treated as the GC stating a date (F2.4 / edge cases).
+    internal_domains: str = Field(default="ferryelectric.com", alias="INTERNAL_DOMAINS")
+    opportunity_archive_days: int = Field(default=180, alias="OPPORTUNITY_ARCHIVE_DAYS")
+    merge_undo_days: int = Field(default=30, alias="MERGE_UNDO_DAYS")
+
     # SPEC-02: classification and extraction
     extraction_max_attempts: int = Field(default=3, alias="EXTRACTION_MAX_ATTEMPTS")
     extraction_max_retry_rounds: int = Field(default=24, alias="EXTRACTION_MAX_RETRY_ROUNDS")

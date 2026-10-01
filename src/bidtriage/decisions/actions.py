@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from bidtriage.core.clock import Clock, SystemClock
-from bidtriage.core.models import AuditEvent, Decision, Opportunity, Outcome
+from bidtriage.core.models import AuditEvent, Decision, FieldHistory, Opportunity, Outcome
 from bidtriage.decisions.state import ACTION_TO_STATUS, transition
 
 PASS_REASONS = {
@@ -101,6 +101,20 @@ def apply_action(
     else:
         raise ValueError(f"unknown action {action}")
 
+    if before["status"] != opp.status:
+        # SPEC-03 F4 tracks `status`, and a change a person made belongs in the same history as
+        # one a message caused — the detail page reads `field_history`, not the audit log.
+        session.add(
+            FieldHistory(
+                opportunity_id=opp.id,
+                field="status",
+                old={"value": before["status"]},
+                new={"value": opp.status},
+                user_id=actor_user_id,
+                applied=True,
+                changed_at=now,
+            )
+        )
     opp.last_activity_at = now
     if action != "snooze":
         opp.snooze_until = None
