@@ -96,6 +96,43 @@ Rules:
 - [ ] Given a digest was sent, when `/digests/2026-09-30` is opened, then the exact HTML that was sent is displayed.
 - [ ] Given a public holiday configured, when that day arrives, then no digest is sent and the next business day's digest includes items from both days in New.
 
+## Open Question: the Consider cap can omit a due-date-unknown item
+
+**Raised 2026-09-30 from a fixture-corpus run. Needs a product decision before SPEC-05 is
+verified; the implementation currently matches this spec, so nothing is broken as written.**
+
+Two rules in this spec compose into a behaviour the PRD rules out:
+
+* F3 / edge cases: Consider is capped at 10 with "+N more".
+* Edge cases: an item whose due date is unknown is "sorted last within band".
+
+An item with no due date therefore sorts to the bottom of its band and is the *first* one the cap
+removes. The PRD's edge story says the opposite: "when the system cannot find a due date, I want
+the item flagged 'due date unknown' rather than **omitted** or guessed."
+
+Observed: in a 31-opportunity run, 5 Consider items fell past the cap and one of them —
+`Hazelwood Green Parcel C Parking Structure` — was the only opportunity with no due date. It
+survived the digest only because it was separately an orphan stub, which put it in the chief-only
+**Needs review** section. An estimator would not have seen it at all, and a due-date-unknown item
+that was not also an orphan would have appeared nowhere in the digest body.
+
+The "+N more" count is honest (verified: 5 hidden, 5 reported), so nothing is hidden silently at
+the aggregate level. The question is whether an unknown deadline should be treated as *low
+priority* (sort last, as specified today) or as *higher risk* (surface it, because an unknown
+deadline is the one most likely to be missed).
+
+Three ways to resolve, for whoever owns this spec:
+
+1. **Exempt unknown-due items from the cap** — they are rare by construction, so the cap still does
+   its job on volume.
+2. **Sort them first within band rather than last**, on the reasoning that a missing deadline is a
+   risk signal, not a deprioritizer.
+3. **Keep the current behaviour** and amend the PRD story, on the reasoning that "+N more" plus the
+   Needs review section is sufficient coverage.
+
+Whichever is chosen, add the matching row to the table below with a named test; `test_unknown_due_rendering`
+covers the rendering only, not whether the item reaches the page.
+
 ## Edge Cases and Required Tests
 
 | Case | Expected | Test |
