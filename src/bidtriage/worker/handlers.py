@@ -197,28 +197,43 @@ def score_opportunity(session: Session, payload: dict[str, Any], ctx: Context) -
 
 
 def rescore_all(session: Session, payload: dict[str, Any], ctx: Context) -> None:
-    profile, version = pipeline.active_profile(session)
-    for opp in session.scalars(
-        select(Opportunity).where(
-            Opportunity.archived_at.is_(None),
-            Opportunity.status.not_in(["submitted", "won", "lost"]),
-        )
-    ).all():
-        pipeline.score_opportunity(
-            session, opp, home=ctx.home, profile=profile, profile_version=version
-        )
+    """Rescore the live board (SPEC-04 F8). Runs nightly, and again when a profile is activated.
+
+    Only an activation marks band changes for the digest: a job whose band moved because the
+    calendar advanced past a timing boundary has not changed, and saying it did would train the
+    chief estimator to ignore the "Changed" line.
+    """
+    note = (
+        f"Rescored under profile v{payload['profile_version']}"
+        if payload.get("profile_version")
+        else None
+    )
+    n = pipeline.rescore(
+        session,
+        session.scalars(
+            select(Opportunity).where(
+                Opportunity.archived_at.is_(None),
+                Opportunity.status.not_in(["submitted", "won", "lost"]),
+            )
+        ).all(),
+        home=ctx.home,
+        note_band_change=note,
+    )
+    log.info(
+        "rescored %d opportunit%s%s", n, "y" if n == 1 else "ies", f" ({note})" if note else ""
+    )
 
 
 def rescore_gc(session: Session, payload: dict[str, Any], ctx: Context) -> None:
-    profile, version = pipeline.active_profile(session)
-    for opp in session.scalars(
-        select(Opportunity).where(
-            Opportunity.gc_id == payload["gc_id"], Opportunity.archived_at.is_(None)
-        )
-    ).all():
-        pipeline.score_opportunity(
-            session, opp, home=ctx.home, profile=profile, profile_version=version
-        )
+    pipeline.rescore(
+        session,
+        session.scalars(
+            select(Opportunity).where(
+                Opportunity.gc_id == payload["gc_id"], Opportunity.archived_at.is_(None)
+            )
+        ).all(),
+        home=ctx.home,
+    )
 
 
 def unsnooze(session: Session, payload: dict[str, Any], ctx: Context) -> None:

@@ -14,8 +14,14 @@ class OpportunitySnapshot(BaseModel):
     stated_electrical_value: float | None = None
     stated_project_value: float | None = None
     square_feet: float | None = None
+    #: Verbatim excerpt the size numbers came from. The extraction prompt gives the midpoint of a
+    #: stated range and quotes the range here, so this is the only place the range survives
+    #: (SPEC-04 F2, "explanation shows range").
+    size_source: str | None = None
     distance_miles: float | None = None
     bid_due: datetime | None = None
+    #: Extraction confidence in `bid_due`, used by the `past_due_at_receipt` reason (SPEC-04 F3).
+    bid_due_confidence: float | None = None
     prebid_at: datetime | None = None
     prebid_mandatory: bool | None = None
     bid_type: str = "unknown"

@@ -22,8 +22,8 @@ SYSTEM HEALTH
   Addenda: {{ it.addenda_count }}{% if it.addendum_gap %} ({% if it.missing_addenda %}Addend{{ 'a' if it.missing_addenda|length > 1 else 'um' }} {{ it.missing_addenda|join(', ') }} not received{% else %}GAP{% endif %}){% endif %}{% if it.docs_host %} | Docs: {{ it.docs_host|humanize }}{% endif %}{% if it.flags %} | {{ it.flags|map('humanize')|join(', ') }}{% endif %}
 {% if it.change_summary %}  Changed: {{ it.change_summary }}
 {% endif %}
-  Why: {{ it.why_positive|join(' (+), ') }}{% if it.why_positive %} (+){% endif %}{% if it.why_negative %}; {{ it.why_negative|join(' (-), ') }} (-){% endif %}
-{% for label, url in it.actions.items() %}  {{ label }}: {{ url }}
+{% if it.why_positive or it.why_negative %}  Why: {{ it.why_positive|join(' (+), ') }}{% if it.why_positive %} (+){% endif %}{% if it.why_negative %}{% if it.why_positive %}; {% endif %}{{ it.why_negative|join(' (-), ') }} (-){% endif %}
+{% endif %}{% for label, url in it.actions.items() %}  {{ label }}: {{ url }}
 {% endfor %}
   Open: {{ it.open_url }}
 {% endmacro %}

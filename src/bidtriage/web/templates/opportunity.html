@@ -21,9 +21,14 @@
 </div>
 {% if score %}
 <div class="card"><h2>Score {{ score.score }} · <span class="band-{{ score.band }}">{{ score.band }}</span> <small>(profile v{{ score.profile_version }})</small></h2>
-<table><tr><th>Factor</th><th>Weight</th><th>Value</th><th>Contribution</th><th>Reason</th></tr>
-{% for f in score.explanation.contributions %}<tr><td>{{ f.factor }}</td><td>{{ f.weight }}</td><td>{{ '%.2f'|format(f.value) }}</td><td>{{ '%.1f'|format(f.contribution) }}</td><td>{{ f.reason }}</td></tr>{% endfor %}
+<table><tr><th>Factor</th><th>Weight</th><th>Value</th><th>Neutral</th><th>Contribution</th><th></th><th>Reason</th></tr>
+{% for f in score.explanation.contributions %}<tr><td>{{ f.factor }}</td><td>{{ f.weight }}</td><td>{{ '%.2f'|format(f.value) }}</td>
+<td>{{ '%.2f'|format(f.get('neutral', 0.5)) }}</td><td>{{ '%.1f'|format(f.contribution) }}</td>
+<td>{% if f.value > f.get('neutral', 0.5) %}<span style="color:#1a7f37">helping</span>{% elif f.value < f.get('neutral', 0.5) %}<span style="color:#b00020">hurting</span>{% else %}<span style="color:#777">no signal</span>{% endif %}</td>
+<td>{{ f.reason }}</td></tr>{% endfor %}
 </table>
+<p><small>"Neutral" is what a factor scores when nothing is known about it. A factor at neutral is
+not an argument either way, so it is left out of the digest's <i>Why</i> line (SPEC-04 F6).</small></p>
 {% if score.explanation.boosts %}<p><b>Boosts:</b> {% for b in score.explanation.boosts %}+{{ b.amount }} {{ b.reason }}; {% endfor %}</p>{% endif %}
 {% if score.explanation.caps %}<p><b>Caps:</b> {% for b in score.explanation.caps %}≤{{ b.amount }} {{ b.reason }}; {% endfor %}</p>{% endif %}
 {% if score.explanation.warnings %}<p><b>Verify:</b> {{ score.explanation.warnings|join('; ') }}</p>{% endif %}

@@ -1,0 +1,63 @@
+{% extends "base.html" %}{% block title %}Scoring profile{% endblock %}
+{% macro fields(prefix, obj) %}
+{% for k, v in obj.items() %}
+  {% if v is mapping %}
+  <fieldset style="border:1px solid #e5e5e5;margin:8px 0;padding:8px;">
+    <legend><b>{{ k|replace('_', ' ') }}</b></legend>
+    {{ fields(prefix ~ k ~ '.', v) }}
+  </fieldset>
+  {% elif v is sequence and v is not string %}
+  <label style="display:inline-block;margin:2px 12px 2px 0;">{{ k|replace('_', ' ') }}
+    <input name="p.{{ prefix }}{{ k }}" value="{{ v|join(', ') }}" size="40"></label>
+  {% else %}
+  <label style="display:inline-block;margin:2px 12px 2px 0;">{{ k|replace('_', ' ') }}
+    <input name="p.{{ prefix }}{{ k }}" value="{{ v if v is not none else '' }}" size="{{ 10 if v is number else 20 }}"></label>
+  {% endif %}
+{% endfor %}
+{% endmacro %}
+{% block content %}
+<h1>Scoring profile</h1>
+<p><small>Every change is saved as a new version; versions are immutable and are never deleted, so
+every score stays explainable. Preview before saving: it rescores the last 30 days and shows what
+would move. The field layout follows the <a href="/admin/profiles/schema.json">published JSON
+schema</a>.</small></p>
+
+{% if error %}<div class="card" style="border-color:#b00020;"><b>Not saved:</b> {{ error }}</div>{% endif %}
+{% if warnings %}<div class="card" style="border-color:#b26a00;"><b>Warnings</b>
+<ul>{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul></div>{% endif %}
+
+{% if preview %}
+<div class="card"><h2>Preview</h2>
+<p>Rescored <b>{{ preview.scored }}</b> opportunit{{ 'y' if preview.scored == 1 else 'ies' }} from the last 30 days.
+<b>{{ preview.changes|length + preview.truncated }}</b> would change band.</p>
+{% if preview.changes %}
+<table><tr><th>Opportunity</th><th>Now</th><th>Would be</th></tr>
+{% for c in preview.changes %}<tr>
+<td><a href="/opportunities/{{ c.opportunity_id }}">{{ c.name }}</a></td>
+<td>{{ c.before_score }} <span class="band-{{ c.before_band }}">{{ c.before_band|replace('_', ' ') }}</span></td>
+<td>{{ c.after_score }} <span class="band-{{ c.after_band }}">{{ c.after_band|replace('_', ' ') }}</span></td>
+</tr>{% endfor %}
+</table>
+{% if preview.truncated %}<p><small>and {{ preview.truncated }} more.</small></p>{% endif %}
+{% else %}<p>No opportunity changes band under this profile.</p>{% endif %}
+</div>
+{% endif %}
+
+<form method="post" action="/admin/profiles">
+<input type="hidden" name="based_on" value="{{ based_on if based_on is not none else '' }}">
+<div class="card">
+<label>Note <input name="note" value="{{ note }}" size="60" placeholder="why this version exists"></label>
+<button class="primary" type="submit">Save as new version</button>
+<button type="submit" formaction="/admin/profiles/preview">Preview</button>
+<a class="btn" href="/admin/">Cancel</a>
+</div>
+<div class="card">{{ fields('', profile) }}</div>
+</form>
+
+<div class="card"><h2>Versions</h2>
+<table><tr><th>v</th><th>Name</th><th>Active</th><th>Note</th><th>Created</th><th></th></tr>
+{% for p in versions %}<tr><td>{{ p.version }}</td><td>{{ p.json.name }}</td><td>{{ '✓' if p.active else '' }}</td>
+<td>{{ p.note }}</td><td>{{ p.created_at.strftime('%Y-%m-%d') }}</td>
+<td><a href="/admin/profiles/edit?version={{ p.version }}">Start from this</a></td></tr>{% endfor %}
+</table></div>
+{% endblock %}

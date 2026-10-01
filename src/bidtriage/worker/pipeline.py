@@ -5,10 +5,12 @@ Each step is a function over a Session so the worker, the CLI and tests share on
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -1029,6 +1031,23 @@ def resolve_message(
             opp.last_activity_at = now
         else:
             _apply_update(session, opp, x, msg, now, provisional=(decision == "review"))
+            if opp.gc_id is None and gc_id is not None:
+                # The GC resolved after the fact: this message carried a contact domain the
+                # directory knows, or the first one never named a GC at all. The score leans on
+                # the tier, so the link is worth making and the rescore queued below picks it up
+                # (SPEC-04 F8, `test_rescore_on_gc_resolution`).
+                session.add(
+                    FieldHistory(
+                        opportunity_id=opp.id,
+                        field="gc_id",
+                        old=None,
+                        new={"value": gc_id},
+                        message_id=msg.id,
+                        applied=True,
+                        changed_at=now,
+                    )
+                )
+                opp.gc_id = gc_id
         if best[2].hard_key is not None:
             # A platform project id or a shared thread settles the identity, so an earlier
             # provisional attach is no longer an open question for a human.
@@ -1656,18 +1675,69 @@ def active_profile(session: Session) -> tuple[Profile, int]:
     return Profile.model_validate(row.json), row.version
 
 
+def bidding_due_dates(session: Session) -> list[tuple[datetime, str]]:
+    """Every live bid's due date, sorted. Built once per rescoring pass (SPEC-04 F1 congestion).
+
+    The congestion factor asks "how many other bids are due that week", which is a question about
+    the whole board. Asking it per opportunity turns a nightly rescore into an O(n²) table scan;
+    5,000 opportunities have to finish in under a minute (SPEC-04 edge cases).
+    """
+    out: list[tuple[datetime, str]] = []
+    for opp_id, canonical in session.execute(
+        select(Opportunity.id, Opportunity.canonical).where(Opportunity.status == "bidding")
+    ):
+        raw = ((canonical or {}).get("bid_due") or {}).get("value")
+        if raw:
+            due = aware(datetime.fromisoformat(raw))
+            assert due is not None
+            out.append((due, opp_id))
+    out.sort(key=lambda row: (row[0], row[1]))
+    return out
+
+
+def _congestion(due: datetime | None, opp_id: str, index: list[tuple[datetime, str]]) -> int:
+    """Other `bidding` opportunities due in the same calendar week as `due`."""
+    if due is None:
+        return 0
+    wk_start = (due - timedelta(days=due.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    wk_end = wk_start + timedelta(days=7)
+    lo = bisect.bisect_left(index, (wk_start, ""))
+    hi = bisect.bisect_left(index, (wk_end, ""))
+    return sum(1 for _, other in index[lo:hi] if other != opp_id)
+
+
 def snapshot_for(
-    session: Session, opp: Opportunity, *, now: datetime, home: tuple[float, float] | None
+    session: Session,
+    opp: Opportunity,
+    *,
+    now: datetime,
+    home: tuple[float, float] | None,
+    due_index: list[tuple[datetime, str]] | None = None,
 ) -> tuple[OpportunitySnapshot, GCSnapshot, CalendarSnapshot]:
     c = opp.canonical
     size = c.get("size_signals") or {}
-    due_raw = (c.get("bid_due") or {}).get("value")
-    due = datetime.fromisoformat(due_raw) if due_raw else None
+    due_field = c.get("bid_due") or {}
+    due_raw = due_field.get("value")
+    # `aware()` because a canonical record written before timezones were enforced — or by hand —
+    # would otherwise be naive, and subtracting it from `now` raises (CLAUDE.md, core/clock.py).
+    due = aware(datetime.fromisoformat(due_raw)) if due_raw else None
     pb_raw = (c.get("prebid") or {}).get("value")
     dist = (
         haversine_miles(home[0], home[1], opp.lat, opp.lon)
         if (home and opp.lat is not None and opp.lon is not None)
         else None
+    )
+    gc = session.get(GC, opp.gc_id) if opp.gc_id else None
+    stats = session.get(GCStats, (opp.gc_id, "12m")) if opp.gc_id else None
+    owner_name = (c.get("owner_name") or {}).get("value")
+    # Separations Act primes come from the owner, not a GC: either the directory already knows the
+    # sender is an owner, or nobody named a GC and the owner did the inviting (SPEC-04 F1).
+    owner_direct = (
+        gc.kind in ("owner", "developer")
+        if gc is not None
+        else bool(owner_name and not (c.get("gc_name") or {}).get("value"))
     )
     o = OpportunitySnapshot(
         opportunity_id=opp.id,
@@ -1676,20 +1746,20 @@ def snapshot_for(
         stated_electrical_value=size.get("stated_electrical_value"),
         stated_project_value=size.get("stated_project_value"),
         square_feet=size.get("square_feet"),
+        size_source=size.get("source"),
         distance_miles=dist,
         bid_due=due,
-        prebid_at=datetime.fromisoformat(pb_raw) if pb_raw else None,
+        bid_due_confidence=due_field.get("confidence"),
+        prebid_at=aware(datetime.fromisoformat(pb_raw)) if pb_raw else None,
         prebid_mandatory=(c.get("prebid") or {}).get("mandatory"),
         bid_type=c.get("bid_type", "unknown"),
         sector=c.get("sector", "unknown"),
         flags=list(opp.flags),
         scope_items=list(c.get("scope_items") or []),
-        owner_name=(c.get("owner_name") or {}).get("value"),
+        owner_name=owner_name,
         status=opp.status,
-        gc_is_owner_direct=False,
+        gc_is_owner_direct=owner_direct,
     )
-    gc = session.get(GC, opp.gc_id) if opp.gc_id else None
-    stats = session.get(GCStats, (opp.gc_id, "12m")) if opp.gc_id else None
     g = GCSnapshot(
         gc_id=gc.id if gc else None,
         name=gc.canonical_name if gc else None,
@@ -1698,17 +1768,25 @@ def snapshot_for(
         hit_rate_12m=stats.hit_rate if stats else None,
         key_account=gc.key_account if gc else False,
     )
-    congestion = 0
-    if due is not None:
-        wk_start = due - timedelta(days=due.weekday())
-        wk_end = wk_start + timedelta(days=7)
-        for other in session.scalars(
-            select(Opportunity).where(Opportunity.status == "bidding", Opportunity.id != opp.id)
-        ).all():
-            od = (other.canonical.get("bid_due") or {}).get("value")
-            if od and wk_start <= datetime.fromisoformat(od) < wk_end:
-                congestion += 1
-    return o, g, CalendarSnapshot(now=now, other_bids_due_same_week=congestion)
+    index = bidding_due_dates(session) if due_index is None else due_index
+    return o, g, CalendarSnapshot(now=now, other_bids_due_same_week=_congestion(due, opp.id, index))
+
+
+def latest_score(session: Session, opportunity_id: str) -> Score | None:
+    return session.scalars(
+        select(Score)
+        .where(Score.opportunity_id == opportunity_id)
+        .order_by(Score.computed_at.desc(), Score.id.desc())
+    ).first()
+
+
+def _stable(explanation: dict[str, Any]) -> dict[str, Any]:
+    """The part of an explanation that is about the opportunity rather than about the clock.
+
+    `inputs_hash` covers the wall-clock instant, so it differs on every pass even when nothing
+    moved. Everything else is what an estimator would call the score.
+    """
+    return {k: v for k, v in explanation.items() if k != "inputs_hash"}
 
 
 def score_opportunity(
@@ -1719,22 +1797,146 @@ def score_opportunity(
     home: tuple[float, float] | None = None,
     profile: Profile | None = None,
     profile_version: int | None = None,
+    due_index: list[tuple[datetime, str]] | None = None,
+    note_band_change: str | None = None,
 ) -> ScoreResult:
+    """Score one opportunity and persist the result, unless it is the same result as last time.
+
+    `note_band_change` is the digest's side of SPEC-04 F7: when a new profile moves an opportunity
+    into a different band, say so on the next digest. Nothing is noted for the nightly pass, where
+    a band change is just the calendar advancing and is not news (SPEC-04 edge cases).
+    """
     now = now or datetime.now(tz=UTC)
     if profile is None:
         profile, profile_version = active_profile(session)
-    o, g, cal = snapshot_for(session, opp, now=now, home=home)
+    o, g, cal = snapshot_for(session, opp, now=now, home=home, due_index=due_index)
     result = score(o, g, cal, profile)
+    payload = result.model_dump(mode="json")
+    previous = latest_score(session, opp.id)
+    if (
+        previous is not None
+        and previous.profile_version == (profile_version or 0)
+        and _stable(previous.explanation) == _stable(payload)
+    ):
+        # Idempotent rescoring (ADR-005): an unchanged score is not a new fact, and writing one
+        # row per opportunity per night would bury the history that matters.
+        return result
+    if note_band_change and previous is not None and previous.band != result.band:
+        opp.changed_since_digest = True
+        opp.change_summary = (
+            f"{opp.change_summary}; {note_band_change}" if opp.change_summary else note_band_change
+        )
     session.add(
         Score(
             opportunity_id=opp.id,
             profile_version=profile_version or 0,
             score=result.score,
             band=result.band,
-            explanation=result.model_dump(mode="json"),
+            explanation=payload,
             inputs_hash=result.inputs_hash,
             computed_at=now,
         )
     )
     session.flush()
     return result
+
+
+def rescore(
+    session: Session,
+    opps: Iterable[Opportunity],
+    *,
+    now: datetime | None = None,
+    home: tuple[float, float] | None = None,
+    note_band_change: str | None = None,
+) -> int:
+    """Rescore a batch under the active profile, sharing the one expensive snapshot input."""
+    now = now or datetime.now(tz=UTC)
+    profile, version = active_profile(session)
+    index = bidding_due_dates(session)
+    count = 0
+    for opp in opps:
+        score_opportunity(
+            session,
+            opp,
+            now=now,
+            home=home,
+            profile=profile,
+            profile_version=version,
+            due_index=index,
+            note_band_change=note_band_change,
+        )
+        count += 1
+    return count
+
+
+@dataclass(frozen=True)
+class BandChange:
+    """One opportunity that a candidate profile would move between bands."""
+
+    opportunity_id: str
+    name: str
+    before_score: int
+    before_band: str
+    after_score: int
+    after_band: str
+
+
+@dataclass(frozen=True)
+class ProfilePreview:
+    """What activating a candidate profile would do to the recent board (SPEC-04 F7)."""
+
+    scored: int
+    changes: list[BandChange]
+    truncated: int
+    warnings: list[str]
+
+
+def preview_profile(
+    session: Session,
+    candidate: Profile,
+    *,
+    now: datetime,
+    home: tuple[float, float] | None = None,
+    days: int = 30,
+    limit: int = 25,
+) -> ProfilePreview:
+    """Score the last `days` of opportunities under the active and candidate profiles.
+
+    Writes nothing. The chief estimator should be able to see that dropping higher education from
+    1.0 to 0.8 moves eleven jobs out of Bid *before* committing to it (SPEC-04 F7).
+    """
+    active, _ = active_profile(session)
+    index = bidding_due_dates(session)
+    cutoff = now - timedelta(days=days)
+    changes: list[BandChange] = []
+    scored = truncated = 0
+    for opp in session.scalars(
+        select(Opportunity)
+        .where(Opportunity.archived_at.is_(None), Opportunity.first_seen_at >= cutoff)
+        .order_by(Opportunity.first_seen_at.desc())
+    ).all():
+        o, g, cal = snapshot_for(session, opp, now=now, home=home, due_index=index)
+        before = score(o, g, cal, active)
+        after = score(o, g, cal, candidate)
+        scored += 1
+        if before.band == after.band:
+            continue
+        if len(changes) >= limit:
+            truncated += 1
+            continue
+        changes.append(
+            BandChange(
+                opportunity_id=opp.id,
+                name=(opp.canonical.get("project_name") or {}).get("value") or "Untitled",
+                before_score=before.score,
+                before_band=before.band,
+                after_score=after.score,
+                after_band=after.band,
+            )
+        )
+    return ProfilePreview(
+        scored=scored,
+        changes=changes,
+        truncated=truncated,
+        warnings=candidate.validation_warnings(),
+    )

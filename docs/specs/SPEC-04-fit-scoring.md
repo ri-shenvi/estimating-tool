@@ -1,6 +1,6 @@
 # SPEC-04: Fit Scoring
 
-**Status:** Draft · **Priority:** P0 · **Depends on:** SPEC-02, SPEC-03, SPEC-07 · **Feeds:** SPEC-05
+**Status:** Implemented · **Priority:** P0 · **Depends on:** SPEC-02, SPEC-03, SPEC-07 · **Feeds:** SPEC-05
 
 ## Problem
 
@@ -95,11 +95,17 @@ two lists must be disjoint: a factor that appears as a reason to bid cannot also
 reason not to. A factor at or below its neutral value is not a reason for anything and belongs in
 neither list; if fewer than three factors clear that bar, render fewer than three.
 
-**Known deviation (found 2026-09-30 against the running product, unfixed).** `ScoreResult.top_positive`
-is `sorted(contributions, key=-contribution)[:3]` with no floor, while `top_negative` ranks by
-shortfall from the maximum (`contribution - weight * 100`) and filters to `value < 0.7`. On a
-weighted-average score, contribution is dominated by *weight*, so the "positive" list is really
-"the three heaviest factors" regardless of merit, and a mid-valued heavy factor satisfies both
+Each factor's *neutral* is what it scores when nothing is known about it, read from the profile:
+`type_table.unknown`, `size_band.unknown_value`, `gc_tier.unknown`, `distance.unknown_value`,
+`timing.unknown`, `bid_type.unknown`. Each stored contribution carries its own `neutral`, so the
+digest can tell "helping" from "we have no idea" without re-reading the profile. The lists are
+ranked by distance from neutral (`weight × (value − neutral)`), not by raw contribution.
+
+**History (found 2026-09-30 against the running product; fixed 2026-10-01).** `top_positive` was
+`sorted(contributions, key=-contribution)[:3]` with no floor, while `top_negative` ranked by
+shortfall from the maximum (`contribution - weight * 100`) and filtered to `value < 0.7`. On a
+weighted-average score, contribution is dominated by *weight*, so the "positive" list was really
+"the three heaviest factors" regardless of merit, and a mid-valued heavy factor satisfied both
 definitions at once. Every one of the 22 digest items in a fixture-corpus run carried a
 self-contradiction:
 
@@ -113,10 +119,10 @@ gc                0.25    0.50     12.5
 timing            0.10    0.70      7.0
 ```
 
-Nothing about that job scores above 0.60, yet three facts are presented as reasons to bid, and
-"size unknown" — pure absence of information — is presented as the second-best one. This is the
-chief estimator's trust story (`G3`, and "show me *why* it scored as it did so that I can trust or
-override the number") failing on every row.
+Nothing about that job scored above 0.60, yet three facts were presented as reasons to bid, and
+"size unknown" — pure absence of information — as the second-best one. That row now reads
+`Why: government civic (+), due in 60 days (+)`, with size and GC named in neither list
+(`test_explanation_lists_are_disjoint`, `test_digest_why_line_never_contradicts_itself`).
 
 ### F7. Scoring profile
 
@@ -124,23 +130,36 @@ override the number") failing on every row.
 - Edited in the admin UI as a form (weights, type table, size band, distance curve, thresholds, boosts) with a live preview that rescores the last 30 days and shows how many opportunities change band.
 - Activating a version rescores all non-archived opportunities and marks changed bands in the next digest ("Rescored under profile v7").
 - Weight validation: sum to 1.0 ± 0.001; all values within stated ranges; at least one type with factor 1.0.
+  The last rule means demoting the current top type is a two-part edit — something else has to take
+  1.0 — because the table is a ranking relative to Ferry's best work, not an absolute scale.
+- A project type with no row is a *warning*, not a rejection: it scores as `other`, and the editor
+  says which types are missing rather than letting healthcare quietly score 0.4.
+- The profile JSON schema is published at `/admin/profiles/schema.json`; the form is one input per
+  leaf of it. Versions are immutable once saved and cannot be deleted — only the `active` flag moves.
 
 ### F8. Rescoring triggers
 
 Any change to: canonical opportunity fields, GC tier or stats, profile version, or the passage of
-time crossing a timing boundary (nightly rescoring pass before the digest).
+time crossing a timing boundary (nightly rescoring pass before the digest). A GC that resolves
+after the fact — a later message carries a domain the directory knows — links the opportunity and
+rescores it.
+
+Rescoring is idempotent: an unchanged result is not written again, so the history in `scores` is
+the list of times the answer actually moved. Only a profile activation annotates the digest; a
+band that moved because the calendar advanced is not news, and saying it was would teach the chief
+estimator to skip the "Changed" line.
 
 ## Acceptance Criteria
 
-- [ ] Given a higher-education, $12M project, GC tier A, 18 miles away, due in 14 days, hard bid private, when scored under the default profile, then score is in the Bid band and explanation lists project type, size (~$1.56M), and GC as top contributions.
-- [ ] Given the same opportunity with GC tier `blocked`, then score = 0 and the reason "GC is on the do-not-bid list" is present.
-- [ ] Given a roofing ITB (`trade_relevance=none`), then score ≤ 5.
-- [ ] Given a mandatory pre-bid dated yesterday, then score ≤ 10 with the pre-bid reason.
-- [ ] Given no size information, then size factor = 0.5 and `missing_inputs` contains "size".
-- [ ] Given three `bidding` opportunities already due the same week, then the timing factor is multiplied by 0.6 and the explanation says so.
-- [ ] Given the chief estimator changes higher_education from 1.0 to 0.8 and activates v2, then all opportunities are rescored, `profile_version=2` is stored on each score, and the digest lists opportunities whose band changed.
-- [ ] Given a profile edit where weights sum to 1.05, then saving is rejected with a validation message.
-- [ ] Given identical inputs scored twice, then scores and explanations are byte-identical.
+- [x] Given a higher-education, $12M project, GC tier A, 18 miles away, due in 14 days, hard bid private, when scored under the default profile, then score is in the Bid band and explanation lists project type, size (~$1.56M), and GC as top contributions.
+- [x] Given the same opportunity with GC tier `blocked`, then score = 0 and the reason "GC is on the do-not-bid list" is present.
+- [x] Given a roofing ITB (`trade_relevance=none`), then score ≤ 5.
+- [x] Given a mandatory pre-bid dated yesterday, then score ≤ 10 with the pre-bid reason.
+- [x] Given no size information, then size factor = 0.5 and `missing_inputs` contains "size".
+- [x] Given three `bidding` opportunities already due the same week, then the timing factor is multiplied by 0.6 and the explanation says so.
+- [x] Given the chief estimator changes higher_education from 1.0 to 0.8 and activates v2, then all opportunities are rescored, `profile_version=2` is stored on each score, and the digest lists opportunities whose band changed.
+- [x] Given a profile edit where weights sum to 1.05, then saving is rejected with a validation message.
+- [x] Given identical inputs scored twice, then scores and explanations are byte-identical.
 
 ## Edge Cases and Required Tests
 
@@ -168,4 +187,7 @@ time crossing a timing boundary (nightly rescoring pass before the digest).
 
 - Pure function: `score(opportunity_snapshot, gc_snapshot, calendar_snapshot, profile) -> ScoreResult`. No I/O inside; snapshots assembled by the caller so tests are trivial and results are reproducible.
 - Profile JSON schema is published and validated; the admin UI is a thin form over it.
-- Calibration harness: `make calibrate` scores the labeled corpus, prints precision/recall per band, and a confusion table by project type and GC tier.
+- Calibration harness: `make calibrate` scores the labeled corpus, prints precision/recall per band,
+  and a confusion table by project type and GC tier. It exits non-zero when the bid band misses the
+  goals above (`--no-gate` to report without failing). The corpus itself is the chief estimator's
+  Phase 0 export; the command says so rather than inventing labels when the file is absent.

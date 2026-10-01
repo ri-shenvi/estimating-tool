@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import timedelta
 
 from pydantic import BaseModel, Field
@@ -14,6 +15,18 @@ from bidtriage.scoring.snapshot import CalendarSnapshot, GCSnapshot, Opportunity
 RENEWABLE_SCOPES = {"solar_pv", "battery_storage", "ev_charging"}
 DB_SCOPES = {"design_build_engineering", "bim_coordination"}
 
+#: Floating-point slack when comparing a factor against its neutral value. Two numbers that differ
+#: in the fifteenth decimal place are the same number as far as an estimator is concerned.
+EPSILON = 1e-9
+
+#: "$1.2 - 1.5 million", "$800K to $1M", "1.2–1.5M". The extraction prompt stores the midpoint and
+#: quotes the range in the source excerpt, so this is how the range reaches the explanation.
+_RANGE = re.compile(
+    r"\$?\s*\d[\d,.]*\s*(?:million|billion|thousand|[mkb])?\s*(?:-|–|—|to)\s*"
+    r"\$?\s*\d[\d,.]*\s*(?:million|billion|thousand|[mkb])?",
+    re.IGNORECASE,
+)
+
 
 class Contribution(BaseModel):
     factor: str
@@ -21,6 +34,15 @@ class Contribution(BaseModel):
     value: float
     contribution: float
     reason: str
+    #: What this factor scores when nothing is known about it. Stored alongside the value so the
+    #: digest can tell "this is helping" from "we have no idea" without re-reading the profile
+    #: (SPEC-04 F6). Scores written before this field existed default to the common 0.5.
+    neutral: float = 0.5
+
+    @property
+    def surplus(self) -> float:
+        """Points this factor added relative to knowing nothing. Negative when it is hurting."""
+        return self.weight * (self.value - self.neutral) * 100
 
 
 class Adjustment(BaseModel):
@@ -48,31 +70,57 @@ class ScoreResult(BaseModel):
     inputs_hash: str
 
     def top_positive(self, n: int = 3) -> list[Contribution]:
-        return sorted(self.contributions, key=lambda c: -c.contribution)[:n]
+        """The factors actually arguing for this bid, best first (SPEC-04 F6).
+
+        Ranked by how far each factor sits *above* neutral, not by raw contribution. On a
+        weighted average the raw contribution is dominated by the weight, so ranking by it
+        returns the three heaviest factors whatever their merit — which is how "size unknown"
+        once came out as the second-best reason to bid.
+        """
+        helping = [c for c in self.contributions if c.value > c.neutral + EPSILON]
+        return sorted(helping, key=lambda c: -c.surplus)[:n]
 
     def top_negative(self, n: int = 1) -> list[Contribution]:
-        ranked = sorted(self.contributions, key=lambda c: c.contribution - c.weight * 100)
-        return [c for c in ranked[:n] if c.value < 0.7]
+        """The factors arguing against, worst first. Disjoint from `top_positive` by construction."""
+        hurting = [c for c in self.contributions if c.value < c.neutral - EPSILON]
+        return sorted(hurting, key=lambda c: c.surplus)[:n]
+
+
+def stated_range(source: str | None) -> str | None:
+    """The range the size numbers were quoted as, if they were (SPEC-04 F2)."""
+    if not source:
+        return None
+    m = _RANGE.search(source)
+    return " ".join(m.group(0).split()) if m else None
 
 
 def estimate_electrical_value(o: OpportunitySnapshot, p: Profile) -> SizeEstimate:
-    share = p.electrical_share.get(o.project_type, p.electrical_share["unknown"])
+    share = p.electrical_share.get(o.project_type, p.electrical_share.get("unknown", 0.10))
+    # The prompt gives a midpoint for "$1.2 - 1.5 million"; the digest should say so rather than
+    # presenting a number nobody wrote down as if it had been stated exactly.
+    rng = (
+        stated_range(o.size_source)
+        if (o.stated_electrical_value or o.stated_project_value)
+        else None
+    )
+    suffix = f' (stated range "{rng}", midpoint used)' if rng else ""
     if o.stated_electrical_value:
         reason = f"stated electrical value ${o.stated_electrical_value:,.0f}"
         if o.stated_project_value and o.stated_electrical_value / o.stated_project_value > 0.5:
             reason += " (electrical share unusually high, verify)"
         return SizeEstimate(
-            value=o.stated_electrical_value, method="stated_electrical", reason=reason
+            value=o.stated_electrical_value, method="stated_electrical", reason=reason + suffix
         )
     if o.stated_project_value:
         v = o.stated_project_value * share
         return SizeEstimate(
             value=v,
             method="project_value_x_share",
-            reason=f"~${v:,.0f} electrical, from ${o.stated_project_value:,.0f} project value × {share:.0%} {o.project_type.replace('_', ' ')} share",
+            reason=f"~${v:,.0f} electrical, from ${o.stated_project_value:,.0f} project value × {share:.0%} {o.project_type.replace('_', ' ')} share"
+            + suffix,
         )
     if o.square_feet:
-        cost = p.cost_per_sf.get(o.project_type, p.cost_per_sf["unknown"])
+        cost = p.cost_per_sf.get(o.project_type, p.cost_per_sf.get("unknown", 300))
         v = o.square_feet * cost * share
         return SizeEstimate(
             value=v,
@@ -126,16 +174,19 @@ def _timing_factor(o: OpportunitySnapshot, cal: CalendarSnapshot, p: Profile) ->
         days = (o.bid_due - cal.now).total_seconds() / 86400
         if days < 0:
             base, why = 0.0, "due date has passed"
-        elif days < 3:
-            base, why = t.under_3_days, f"due in {max(int(days), 0)} day(s)"
-        elif days < 7:
-            base, why = t.days_3_to_6, f"due in {int(days)} days"
-        elif days <= 21:
-            base, why = t.days_7_to_21, f"due in {int(days)} days"
-        elif days <= 45:
-            base, why = t.days_22_to_45, f"due in {int(days)} days"
         else:
-            base, why = t.over_45, f"due in {int(days)} days"
+            whole = int(days)
+            when = "due today" if whole == 0 else f"due in {whole} day{'' if whole == 1 else 's'}"
+            if days < 3:
+                base, why = t.under_3_days, when
+            elif days < 7:
+                base, why = t.days_3_to_6, when
+            elif days <= 21:
+                base, why = t.days_7_to_21, when
+            elif days <= 45:
+                base, why = t.days_22_to_45, when
+            else:
+                base, why = t.over_45, when
     n = cal.other_bids_due_same_week
     if n >= 3:
         base *= t.congestion_3_plus
@@ -186,7 +237,12 @@ def score(o: OpportunitySnapshot, gc: GCSnapshot, cal: CalendarSnapshot, p: Prof
     flags = set(o.flags)
 
     # project type
-    tv = p.type_table.get(o.project_type, p.type_table.get("other", 0.4))
+    if o.project_type in p.type_table:
+        tv = p.type_table[o.project_type]
+    else:
+        # SPEC-04 edge case: a type the profile never lists still scores, as `other`, and says so.
+        tv = p.type_table.get("other", 0.4)
+        warnings.append(f"project type '{o.project_type}' is not in the profile, scored as other")
     reason = o.project_type.replace("_", " ")
     if o.trade_relevance == "partial":
         tv *= p.partial_relevance_multiplier
@@ -203,6 +259,7 @@ def score(o: OpportunitySnapshot, gc: GCSnapshot, cal: CalendarSnapshot, p: Prof
             value=tv,
             contribution=w.project_type * tv * 100,
             reason=reason,
+            neutral=p.neutral("project_type"),
         )
     )
 
@@ -220,6 +277,7 @@ def score(o: OpportunitySnapshot, gc: GCSnapshot, cal: CalendarSnapshot, p: Prof
             value=sv,
             contribution=w.size * sv * 100,
             reason=est.reason,
+            neutral=p.neutral("size"),
         )
     )
 
@@ -229,7 +287,12 @@ def score(o: OpportunitySnapshot, gc: GCSnapshot, cal: CalendarSnapshot, p: Prof
         missing.append("gc_tier")
     contributions.append(
         Contribution(
-            factor="gc", weight=w.gc, value=gv, contribution=w.gc * gv * 100, reason=greason
+            factor="gc",
+            weight=w.gc,
+            value=gv,
+            contribution=w.gc * gv * 100,
+            reason=greason,
+            neutral=p.neutral("gc"),
         )
     )
 
@@ -247,6 +310,7 @@ def score(o: OpportunitySnapshot, gc: GCSnapshot, cal: CalendarSnapshot, p: Prof
             value=dv,
             contribution=w.distance * dv * 100,
             reason=dreason,
+            neutral=p.neutral("distance"),
         )
     )
 
@@ -259,6 +323,7 @@ def score(o: OpportunitySnapshot, gc: GCSnapshot, cal: CalendarSnapshot, p: Prof
             value=tmv,
             contribution=w.timing * tmv * 100,
             reason=treason,
+            neutral=p.neutral("timing"),
         )
     )
 
@@ -271,6 +336,7 @@ def score(o: OpportunitySnapshot, gc: GCSnapshot, cal: CalendarSnapshot, p: Prof
             value=bv,
             contribution=w.bid_type * bv * 100,
             reason=breason,
+            neutral=p.neutral("bid_type"),
         )
     )
 
@@ -356,7 +422,11 @@ def score(o: OpportunitySnapshot, gc: GCSnapshot, cal: CalendarSnapshot, p: Prof
         cap("above_hard_max", p.caps.above_hard_max, "Above maximum size")
     if o.project_type == "residential_single_family":
         cap("residential", p.caps.residential, "Residential")
-    if "past_due_at_receipt" in flags:
+    if "past_due_at_receipt" in flags and (
+        o.bid_due_confidence is None or o.bid_due_confidence < p.low_confidence
+    ):
+        # Arrived already past due and the date itself is shaky: no cap beyond the one the date
+        # earns on its own, but the estimator should look before trusting it (SPEC-04 F3).
         warnings.append("Due date uncertain, verify")
 
     final = int(round(max(0.0, min(100.0, total))))
