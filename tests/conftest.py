@@ -100,6 +100,7 @@ def pg_engine():
     the JSONB variants (SPEC-03 technical notes).
     """
     from sqlalchemy import create_engine, text
+    from sqlalchemy import inspect as sa_inspect
 
     admin = _pg_admin_engine()
     if admin is None:
@@ -114,9 +115,30 @@ def pg_engine():
 
     cfg = Config(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
     cfg.set_main_option("sqlalchemy.url", url)
-    command.upgrade(cfg, "head")
+    # `migrations/env.py` overrides the config URL from DATABASE_URL whenever that is set, so a
+    # programmatic caller has to go through the environment or it silently migrates whichever
+    # database the surrounding shell points at — CI exports DATABASE_URL, and that is exactly what
+    # happened the first time this ran there.
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = url
+    try:
+        command.upgrade(cfg, "head")
+    finally:
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
 
     engine = create_engine(url, future=True)
+    # Fail loudly here rather than letting every test report a confusing "relation does not exist".
+    with engine.connect() as conn:
+        tables = set(sa_inspect(conn).get_table_names())
+    missing = {"opportunities", "opportunity_keys", "merge_log"} - tables
+    if missing:
+        raise RuntimeError(
+            f"alembic did not migrate {PG_TEST_DB}; missing {sorted(missing)}. "
+            "Check that migrations/env.py honoured the URL this fixture set."
+        )
     try:
         yield engine
     finally:
